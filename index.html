@@ -129,6 +129,34 @@ const leniaP = () => LENIA_PRESETS[state.leniaIdx];
 const palP   = () => PALETTES[state.palIdx];
 const flowAmt = () => leniaP().flow * state.flowMul;
 
+// Persist tweaks across reloads, and allow overrides via URL query params, e.g.
+//   index.html?preset=0&palette=2&flow=1.5&datetime=0
+// This is how you "set" a look for a wallpaper that can't take live keystrokes:
+// tune in a browser tab, then point Plash at the file with the params (or just
+// let the saved settings carry over on reload).
+function loadState() {
+  try {
+    const s = JSON.parse(localStorage.getItem('lenia-wallpaper') || '{}');
+    if (Number.isInteger(s.leniaIdx)) state.leniaIdx = ((s.leniaIdx % LENIA_PRESETS.length) + LENIA_PRESETS.length) % LENIA_PRESETS.length;
+    if (Number.isInteger(s.palIdx))   state.palIdx   = ((s.palIdx % PALETTES.length) + PALETTES.length) % PALETTES.length;
+    if (typeof s.flowMul === 'number') state.flowMul = Math.max(0, Math.min(8, s.flowMul));
+    if (typeof s.datetime === 'boolean') CONFIG.systemData.enabled = s.datetime;
+  } catch (e) {}
+  const q = new URLSearchParams(location.search);
+  if (q.has('preset'))   state.leniaIdx = (Math.abs(parseInt(q.get('preset'))) || 0) % LENIA_PRESETS.length;
+  if (q.has('palette'))  state.palIdx   = (Math.abs(parseInt(q.get('palette'))) || 0) % PALETTES.length;
+  if (q.has('flow'))     state.flowMul  = Math.max(0, Math.min(8, parseFloat(q.get('flow')) || 0));
+  if (q.has('datetime')) CONFIG.systemData.enabled = q.get('datetime') === '1';
+}
+function saveState() {
+  try {
+    localStorage.setItem('lenia-wallpaper', JSON.stringify({
+      leniaIdx: state.leniaIdx, palIdx: state.palIdx,
+      flowMul: state.flowMul, datetime: CONFIG.systemData.enabled }));
+  } catch (e) {}
+}
+loadState();
+
 /* ===========================================================================
    WebGL plumbing
    =========================================================================== */
@@ -500,6 +528,7 @@ window.addEventListener('keydown', e => {
       if (running) running = false; else { running = true; requestAnimationFrame(frame); }
       showHud(); break;
   }
+  saveState();   // remember tweaks so they survive a reload
 });
 
 document.addEventListener('visibilitychange', () => {

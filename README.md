@@ -109,6 +109,24 @@ A hint bar appears on screen on load and whenever you press a key.
 Found a combination you like? Set it as the startup default via
 `CONFIG.leniaPreset` and `CONFIG.palette` (and tune `CONFIG.flow.amount`).
 
+### Tuning it while it's your wallpaper / screensaver
+
+The live hotkeys only reach the page when its window has **keyboard focus**, so:
+
+- **Preview tab (best for tuning):** open `index.html` in a normal browser tab
+  and use the hotkeys freely. Your tweaks are **saved to `localStorage`**, so a
+  reload keeps them.
+- **URL parameters:** lock in a look without editing the file by appending
+  query params, e.g. `index.html?preset=0&palette=2&flow=1.5&datetime=0`
+  (`preset`/`palette` are indices, `flow` is a multiplier, `datetime` is `0`/`1`).
+  Point Plash/WebViewScreenSaver at that URL.
+- **Plash live tuning:** Plash wallpapers are click-through by default. Enable
+  **Browsing Mode** from Plash's menu-bar icon to interact with the live
+  wallpaper (then the hotkeys work); turn it off when done.
+- **Screensaver caveat:** a screensaver only runs while idle, and *any* key or
+  mouse movement exits it — so you can't tune it live there. Dial it in via a
+  preview tab or URL params, then let the screensaver use that.
+
 ## Notes
 
 - Requires a browser with **WebGL2** and float render targets (any recent
