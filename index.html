@@ -7,158 +7,167 @@
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  /* Hide the cursor so it never intrudes on a screensaver / wallpaper. */
-  html, body, canvas { cursor: none; }
+  html, body, canvas { cursor: none; } /* hide cursor for screensaver use */
   #c { display: block; width: 100vw; height: 100vh; }
-  /* Shown only if WebGL2 is unavailable. */
   #fallback {
     position: fixed; inset: 0; display: none; place-items: center;
-    color: #9aa; font: 14px/1.5 -apple-system, system-ui, sans-serif; text-align: center;
-    padding: 2rem;
+    color: #9aa; font: 14px/1.5 -apple-system, system-ui, sans-serif; text-align: center; padding: 2rem;
   }
+  /* On-screen hint / status. Fades out by itself; press H to toggle. */
+  #hud {
+    position: fixed; left: 18px; bottom: 16px; max-width: 90vw;
+    color: rgba(255,255,255,0.82); font: 12px/1.5 -apple-system, system-ui, sans-serif;
+    background: rgba(0,0,0,0.35); padding: 8px 12px; border-radius: 8px;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    pointer-events: none; user-select: none; opacity: 0; transition: opacity 0.6s ease;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #hud b { color: #fff; font-weight: 600; }
+  #hud .keys { color: rgba(255,255,255,0.55); }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="fallback">
-  This needs WebGL2.<br />Open in a recent version of Safari, Chrome, or Firefox.
-</div>
+<div id="fallback">This needs WebGL2.<br />Open in a recent Safari, Chrome, or Firefox.</div>
+<div id="hud"></div>
 
 <script>
 "use strict";
 /* ===========================================================================
-   Generative — a living, endlessly evolving wallpaper.
+   Generative — a living, endlessly evolving wallpaper.  One file, no
+   dependencies, fully offline.
 
-   One file, no dependencies, fully offline. Two "minimum-rule" systems:
+   Two "minimum-rule" systems you can switch between live:
 
-     • LENIA  — a continuous generalization of Conway's Game of Life.
-                A single update rule: convolve the field with a ring kernel,
-                pass the result through one smooth bell-shaped "growth"
-                function, add a sliver back. Game of Life is just one special
-                parameter setting of this. Produces smooth, swimming lifeforms.
+     • LENIA  — a continuous generalization of Conway's Game of Life. One
+                update rule: convolve with a (multi-)ring kernel, pass through a
+                smooth bell-shaped growth function, add a sliver back.
+     • GRAY-SCOTT — reaction-diffusion. Two coupled equations -> coral/Turing
+                patterns. Reliably fluid and ever-moving.
 
-     • GRAY-SCOTT — reaction-diffusion. Two coupled equations produce coral /
-                Turing patterns. Rock-solid beautiful; a great fallback.
+   Live controls (also shown on screen):
+     G  switch system (Lenia <-> Gray-Scott)      P  cycle preset
+     C  cycle palette                             S  toggle date/time effects
+     R  reseed        Space  pause/resume         H  show/hide this hint
 
-   Everything runs on the GPU (ping-pong float textures), so it is very light.
-   The look is modulated by *offline* system data (time of day, date, battery).
-
-   Tweak everything in CONFIG below.
+   Tweak defaults in CONFIG / the PRESETS / PALETTES below.
    =========================================================================== */
 
 const CONFIG = {
-  // ---- Which system to run: 'lenia' or 'gray-scott' --------------------------
-  rule: 'lenia',
+  // Which system & presets to start with (indices into the arrays below).
+  rule: 'lenia',           // 'lenia' | 'gray-scott'
+  leniaPreset: 0,
+  gsPreset: 0,
+  palette: 0,
 
-  // ---- Performance (the "don't bog down my computer" knobs) ------------------
-  // The simulation runs at a fraction of screen resolution and is upscaled.
-  // Lower simScale  -> lighter on the GPU. 0.55 balances fidelity and lightness.
-  simScale: 0.55,
-  // Hard cap on the longest simulation axis (keeps 5K displays cheap).
-  maxSimDim: 900,
-  // Cap device pixel ratio for the display pass. 1.5 looks crisp and stays light.
-  maxDPR: 1.5,
-  // Target frames per second. 30 is plenty for ambient motion and halves work.
+  // ---- Performance (the "don't bog down my computer" knobs) ----------------
+  // The sim runs at a fraction of screen res and is upscaled with smooth
+  // bicubic filtering, so a low simScale stays smooth AND light.
+  simScale: 0.5,
+  maxSimDim: 800,          // hard cap on the longest sim axis
+  maxDPR: 1.5,             // cap device pixel ratio for the display pass
   fps: 30,
-  // Simulation steps computed per displayed frame (Gray-Scott needs several).
   stepsPerFrame: { lenia: 1, 'gray-scott': 8 },
 
-  // ---- Lenia parameters ------------------------------------------------------
-  // R is the kernel radius in *simulation* pixels. Bigger = larger, smoother
-  // creatures but more GPU work (cost grows ~R^2). 13 is the classic value.
-  lenia: {
-    R: 13,
-    dt: 0.12,        // time step ("T" = 1/dt). Smaller = slower, smoother.
-    kmu: 0.5,        // kernel ring center (0..1 of radius)
-    ksig: 0.15,      // kernel ring width
-    gmu: 0.15,       // growth center  — the heart of the behavior
-    gsig: 0.017,     // growth width
-  },
-
-  // ---- Gray-Scott parameters -------------------------------------------------
-  // Try (F,k): coral (0.055,0.062) · mitosis (0.0367,0.0649) · waves (0.014,0.054)
-  grayScott: {
-    Du: 1.0, Dv: 0.5, F: 0.055, k: 0.062, dt: 1.0,
-  },
-
-  // ---- Liveliness: keep it endless ------------------------------------------
-  // Periodically drop a small patch of fresh "soup" so the world never dies
-  // and never freezes. This is what makes it truly endless.
+  // ---- Keep it endless: drop fresh "soup" now and then ---------------------
   reseed: {
-    intervalSec: 9,      // how often to consider dropping a patch
-    probability: 0.85,   // chance to actually drop one each interval
-    radiusFrac: 0.16,    // patch radius as a fraction of the smaller sim axis
-    amount: 0.85,        // how strongly the patch overwrites existing state
+    intervalSec: 7,        // how often to consider blending in a fresh patch
+    probability: 0.85,
+    radiusFrac: 0.2,       // patch radius as a fraction of the smaller sim axis
+    amount: 0.6,           // <1 so patches blend in rather than overwrite
   },
 
-  // ---- Look (bright, fluid, high-fidelity) -----------------------------------
-  // Field value -> color. The palette is an Inigo-Quilez cosine gradient whose
-  // phase/brightness are driven by the time of day (see updateSystemData()).
+  // ---- Look ----------------------------------------------------------------
+  // Empty space is black; field value drives brightness + colour up a palette.
   look: {
-    gain: 1.35,     // contrast of the field before coloring
-    gamma: 0.80,    // <1 lifts midtones (more glow), >1 deepens
-    exposure: 1.20, // overall brightness boost (the "bright" knob)
-    glow: 0.55,     // soft bloom around bright regions (high-fidelity luminance)
-    vignette: 0.14  // subtle darkening toward the edges (0 = off)
+    gain: 1.4,     // contrast of the field before colouring
+    gamma: 0.85,   // brightness ramp (<1 lifts mids / more glow)
+    exposure: 1.15,
+    glow: 0.5,     // soft bloom around bright regions
+    vignette: 0.12,
   },
 
-  // ---- System-data modulation (all offline) ---------------------------------
-  // Colour, speed, brightness and a seasonal parameter drift all respond to the
-  // clock and calendar. Everything here reads new Date() — no network needed.
+  // ---- Date/time modulation (all offline). OFF by default -------------------
+  // When enabled, colour/brightness/speed and a seasonal parameter drift follow
+  // new Date(). Toggle live with S.
   systemData: {
-    enabled: true,
-    // Brightness: dimmer at night, brightest around midday. Kept high so the
-    // image stays bright even after dark.
-    nightDim: 0.72,         // brightness multiplier at midnight (1 = no dimming)
-    // Slowly rotate the palette through the day, and shift it across the year.
-    hueRotatePerDay: 1.0,   // full hue turns over 24h
-    hueShiftPerYear: 1.0,   // additional full hue turn across the year (season)
-    // Speed: the simulation breathes faster around midday, calmer at night,
-    // with a gentle seasonal lean. Expressed as multipliers on the time step.
-    speedDay: 1.35,         // multiplier at midday
-    speedNight: 0.70,       // multiplier at midnight
-    speedSeason: 0.20,      // +/- seasonal swing on top of the daily curve
-    // "Other attributes": nudge Lenia's growth center across the seasons so the
-    // creatures themselves change character through the year.
+    enabled: false,
+    nightDim: 0.72,
+    hueRotatePerDay: 1.0,
+    hueShiftPerYear: 1.0,
+    speedDay: 1.35, speedNight: 0.7, speedSeason: 0.2,
     gmuSeasonSwing: 0.012,
-    // Throttle to this FPS when on battery & below batteryLowLevel (laptops).
-    batteryThrottle: true,
-    batteryLowLevel: 0.30,
-    batteryFps: 20,
+    batteryThrottle: true, batteryLowLevel: 0.30, batteryFps: 20,
   },
 };
+
+// Lenia presets. rings = list of [mu, sigma, peak] concentric kernel rings.
+// Parameters follow Bert Chan's reference WebGL Lenia; seeded with smooth,
+// creature-scale noise so lifeforms self-organize and move.
+const LENIA_PRESETS = [
+  { name: 'Orbium',   R: 15, dt: 0.10, gmu: 0.14, gsig: 0.014,
+    rings: [[0.5, 0.15, 1.0]] },
+  { name: 'Geminium', R: 18, dt: 0.10, gmu: 0.26, gsig: 0.036,
+    rings: [[0.1667, 0.0667, 0.5], [0.5, 0.0667, 1.0], [0.8333, 0.0667, 0.667]] },
+  { name: 'Tricircle', R: 16, dt: 0.10, gmu: 0.16, gsig: 0.018,
+    rings: [[0.25, 0.12, 0.5], [0.55, 0.10, 1.0], [0.85, 0.08, 0.6]] },
+  { name: 'Wide',     R: 20, dt: 0.10, gmu: 0.15, gsig: 0.016,
+    rings: [[0.5, 0.18, 1.0]] },
+];
+
+// Gray-Scott presets (F, k). These are reliably fluid and ever-moving.
+const GS_PRESETS = [
+  { name: 'Mitosis',  F: 0.0367, k: 0.0649 },
+  { name: 'Coral',    F: 0.0545, k: 0.062  },
+  { name: 'Worms',    F: 0.058,  k: 0.065  },
+  { name: 'Waves',    F: 0.014,  k: 0.054  },
+  { name: 'Solitons', F: 0.030,  k: 0.062  },
+];
+
+// Inigo-Quilez cosine palettes: colour = a + b*cos(2pi*(c*t + d)).
+const PALETTES = [
+  { name: 'Ocean',    a: [0.5,0.5,0.5], b: [0.5,0.5,0.5], c: [1.0,1.0,1.0], d: [0.30,0.20,0.20] },
+  { name: 'Candy',    a: [0.5,0.5,0.5], b: [0.5,0.5,0.5], c: [2.0,1.0,0.0], d: [0.50,0.20,0.25] },
+  { name: 'Fire',     a: [0.5,0.5,0.5], b: [0.5,0.5,0.5], c: [2.0,1.0,1.0], d: [0.00,0.25,0.25] },
+  { name: 'Lime',     a: [0.5,0.5,0.5], b: [0.5,0.5,0.5], c: [1.0,1.0,0.5], d: [0.80,0.90,0.30] },
+  { name: 'Spectrum', a: [0.5,0.5,0.5], b: [0.5,0.5,0.5], c: [1.0,1.0,1.0], d: [0.00,0.33,0.67] },
+];
+
+/* ===========================================================================
+   Runtime state
+   =========================================================================== */
+const state = {
+  rule: CONFIG.rule,
+  leniaIdx: CONFIG.leniaPreset,
+  gsIdx: CONFIG.gsPreset,
+  palIdx: CONFIG.palette,
+};
+const leniaP = () => LENIA_PRESETS[state.leniaIdx];
+const gsP    = () => GS_PRESETS[state.gsIdx];
+const palP   = () => PALETTES[state.palIdx];
 
 /* ===========================================================================
    WebGL plumbing
    =========================================================================== */
-
 const canvas = document.getElementById('c');
 const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false,
                                          powerPreference: 'low-power', premultipliedAlpha: false });
+if (!gl) { document.getElementById('fallback').style.display = 'grid'; throw new Error('WebGL2 unavailable'); }
 
-if (!gl) {
-  document.getElementById('fallback').style.display = 'grid';
-  throw new Error('WebGL2 unavailable');
-}
-
-// Float render targets are required for smooth continuous state.
 const extCBF = gl.getExtension('EXT_color_buffer_float');
-const extHFL = gl.getExtension('OES_texture_half_float_linear'); // linear filtering of half-float
+gl.getExtension('OES_texture_half_float_linear'); // nice-to-have; bicubic makes us robust without it
 if (!extCBF) {
-  document.getElementById('fallback').style.display = 'grid';
-  document.getElementById('fallback').textContent =
-    'This GPU/browser can\'t render to float textures. Try a recent Safari/Chrome/Firefox.';
+  const f = document.getElementById('fallback');
+  f.style.display = 'grid';
+  f.textContent = "This GPU/browser can't render to float textures. Try a recent Safari/Chrome/Firefox.";
   throw new Error('EXT_color_buffer_float unavailable');
 }
-const SIM_FILTER = extHFL ? gl.LINEAR : gl.NEAREST; // upscaling quality of the sim field
 
 function compile(type, src) {
   const s = gl.createShader(type);
-  gl.shaderSource(s, src);
-  gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
     throw new Error('Shader compile error:\n' + gl.getShaderInfoLog(s) + '\n\n' + src);
-  }
   return s;
 }
 function program(vsrc, fsrc) {
@@ -166,61 +175,56 @@ function program(vsrc, fsrc) {
   gl.attachShader(p, compile(gl.VERTEX_SHADER, vsrc));
   gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsrc));
   gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS))
     throw new Error('Program link error:\n' + gl.getProgramInfoLog(p));
-  }
-  // Cache uniform locations lazily.
-  p._u = name => {
-    if (!p._cache) p._cache = {};
-    if (!(name in p._cache)) p._cache[name] = gl.getUniformLocation(p, name);
-    return p._cache[name];
-  };
+  p._cache = {};
+  p._u = name => (name in p._cache) ? p._cache[name] : (p._cache[name] = gl.getUniformLocation(p, name));
   return p;
 }
 
-// Fullscreen triangle generated entirely from gl_VertexID — no vertex buffers.
+// Fullscreen triangle from gl_VertexID — no vertex buffers.
 const VERT = `#version 300 es
 void main() {
   vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }`;
 
-// Shared GLSL helpers injected into the fragment shaders.
 const COMMON = `
 precision highp float;
 uniform sampler2D uState;
 uniform vec2  uTexel;       // 1.0 / simSize
-uniform float uTime;        // seconds
-// Reseed "stamp": within a circle, blend in fresh random soup.
-uniform vec2  uSeedCenter;  // in sim pixels
-uniform float uSeedRadius;  // in sim pixels (0 = no stamp)
+uniform float uTime;
+uniform vec2  uSeedCenter;  // sim pixels
+uniform float uSeedRadius;  // sim pixels (0 = no stamp)
 uniform float uSeedAmount;  // 0..1
-uniform float uSeedBlob;    // soup blob size in sim pixels
+uniform float uSeedScale;   // seed-noise feature size in sim pixels (~ kernel R)
 out vec4 outColor;
 
-float hash(vec2 p) {
-  p = fract(p * vec2(123.34, 345.45));
-  p += dot(p, p + 34.345);
-  return fract(p.x * p.y);
+float hash(vec2 p) { p = fract(p * vec2(123.34, 345.45)); p += dot(p, p + 34.345); return fract(p.x * p.y); }
+// Smooth value noise (0..1). Seeding Lenia with smooth, creature-scale noise
+// (rather than hard blobs) is what lets it self-organize into moving lifeforms.
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  float a = hash(i), b = hash(i + vec2(1,0)), c = hash(i + vec2(0,1)), d = hash(i + vec2(1,1));
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
-bool inStamp(out float n) {
-  n = 0.0;
+bool inStamp() {
   if (uSeedRadius <= 0.0 || uSeedAmount <= 0.0) return false;
-  if (distance(gl_FragCoord.xy, uSeedCenter) > uSeedRadius) return false;
-  n = 1.0;
-  return true;
+  return distance(gl_FragCoord.xy, uSeedCenter) <= uSeedRadius;
 }`;
 
-// ---- Lenia simulation -------------------------------------------------------
+// ---- Lenia (multi-ring kernel) ---------------------------------------------
 const FRAG_LENIA = `#version 300 es
 ${COMMON}
-uniform float uR, uKmu, uKsig, uGmu, uGsig, uDt;
+uniform float uR, uGmu, uGsig, uDt;
+uniform int   uRingCount;
+uniform vec3  uRings[4];     // (mu, sigma, peak) per ring
 
 void main() {
   vec2 uv = gl_FragCoord.xy * uTexel;
   float a = texture(uState, uv).r;
 
-  // One rule: weighted neighborhood average through a ring kernel...
   float sum = 0.0, wsum = 0.0;
   int iR = int(ceil(uR));
   for (int dy = -iR; dy <= iR; dy++) {
@@ -228,112 +232,138 @@ void main() {
       vec2 off = vec2(float(dx), float(dy));
       float d = length(off) / uR;
       if (d <= 1.0) {
-        float k = exp(-0.5 * pow((d - uKmu) / uKsig, 2.0)); // concentric ring
-        float s = texture(uState, uv + off * uTexel).r;     // REPEAT-wrapped
-        sum += k * s; wsum += k;
+        float k = 0.0;
+        for (int ri = 0; ri < uRingCount; ri++) {
+          vec3 r = uRings[ri];
+          k += r.z * exp(-0.5 * pow((d - r.x) / r.y, 2.0));
+        }
+        sum += k * texture(uState, uv + off * uTexel).r;  // REPEAT-wrapped
+        wsum += k;
       }
     }
   }
   float u = sum / max(wsum, 1e-9);
-
-  // ...passed through one smooth growth function, a sliver added back.
   float g = 2.0 * exp(-0.5 * pow((u - uGmu) / uGsig, 2.0)) - 1.0;
   float na = clamp(a + uDt * g, 0.0, 1.0);
 
-  // Keep it endless: occasionally stamp fresh soup.
-  float hit;
-  if (inStamp(hit)) {
-    vec2 cell = floor(gl_FragCoord.xy / uSeedBlob);
-    float soup = hash(cell) > 0.55 ? hash(cell + 11.7 + floor(uTime)) : 0.0;
+  // Reseed with smooth, creature-scale noise so new lifeforms self-organize.
+  if (inStamp()) {
+    float soup = 0.85 * vnoise(gl_FragCoord.xy / uSeedScale + vec2(floor(uTime) * 3.7));
     na = mix(na, soup, uSeedAmount);
   }
   outColor = vec4(na, 0.0, 0.0, 1.0);
 }`;
 
-// ---- Gray-Scott simulation --------------------------------------------------
+// ---- Gray-Scott ------------------------------------------------------------
 const FRAG_GS = `#version 300 es
 ${COMMON}
 uniform float uDu, uDv, uF, uK, uDt;
-
 vec2 S(vec2 o) { return texture(uState, gl_FragCoord.xy * uTexel + o * uTexel).rg; }
-
 void main() {
   vec2 c = S(vec2(0.0));
   vec2 lap = S(vec2(-1.,-1.))*0.05 + S(vec2(0.,-1.))*0.2 + S(vec2(1.,-1.))*0.05
-           + S(vec2(-1., 0.))*0.2  + c*(-1.0)           + S(vec2(1., 0.))*0.2
+           + S(vec2(-1., 0.))*0.2  + c*(-1.0)            + S(vec2(1., 0.))*0.2
            + S(vec2(-1., 1.))*0.05 + S(vec2(0., 1.))*0.2 + S(vec2(1., 1.))*0.05;
   float u = c.r, v = c.g, uvv = u * v * v;
   u += (uDu * lap.r - uvv + uF * (1.0 - u)) * uDt;
   v += (uDv * lap.g + uvv - (uF + uK) * v) * uDt;
   u = clamp(u, 0.0, 1.0); v = clamp(v, 0.0, 1.0);
-
-  float hit;
-  if (inStamp(hit)) {
-    vec2 cell = floor(gl_FragCoord.xy / uSeedBlob);
-    if (hash(cell + floor(uTime)) > 0.55) { u = mix(u, 0.5, uSeedAmount); v = mix(v, 0.5, uSeedAmount); }
+  if (inStamp()) {
+    float n = vnoise(gl_FragCoord.xy / uSeedScale + vec2(floor(uTime) * 3.7));
+    if (n > 0.5) { u = mix(u, 0.5, uSeedAmount); v = mix(v, 0.45, uSeedAmount); }
   }
   outColor = vec4(u, v, 0.0, 1.0);
 }`;
 
-// ---- Coloring / display -----------------------------------------------------
+// ---- Colour / display: bicubic upscale + black background + bloom ----------
 const FRAG_COLOR = `#version 300 es
 precision highp float;
 uniform sampler2D uState;
 uniform vec2  uResolution;
-uniform vec2  uSimTexel;      // 1.0 / simSize, for blur taps
-uniform vec2  uChannelMask;   // (1,0) lenia field=R, (0,1) gray-scott field=G
+uniform vec2  uSimSize;       // sim grid size in texels
+uniform vec2  uSimTexel;      // 1.0 / uSimSize
+uniform vec2  uChannelMask;   // (1,0) lenia / (0,1) gray-scott
 uniform float uGain, uGamma, uVignette, uBrightness, uExposure, uGlow;
-uniform vec3  uPalA, uPalB, uPalC, uPalD; // IQ cosine palette
+uniform vec3  uPalA, uPalB, uPalC, uPalD;
 out vec4 outColor;
 
 vec3 palette(float t) { return uPalA + uPalB * cos(6.28318530718 * (uPalC * t + uPalD)); }
-float fieldAt(vec2 uv) { return dot(texture(uState, uv).rg, uChannelMask); }
+
+// Cheap (bilinear/nearest) field sample, used for the soft bloom.
+float field(vec2 uv) { return dot(texture(uState, uv).rg, uChannelMask); }
+
+// Exact texel fetch with wrap, for smooth bicubic upscaling.
+float fetch(ivec2 p) {
+  ivec2 s = ivec2(uSimSize);
+  p = ((p % s) + s) % s;
+  return dot(texelFetch(uState, p, 0).rg, uChannelMask);
+}
+vec4 catmull(float x) {
+  float x2 = x * x, x3 = x2 * x;
+  return vec4(-0.5*x3 + x2 - 0.5*x,
+               1.5*x3 - 2.5*x2 + 1.0,
+              -1.5*x3 + 2.0*x2 + 0.5*x,
+               0.5*x3 - 0.5*x2);
+}
+float fieldCubic(vec2 uv) {
+  vec2 coord = uv * uSimSize - 0.5;
+  vec2 f = fract(coord);
+  ivec2 i = ivec2(floor(coord));
+  vec4 wx = catmull(f.x), wy = catmull(f.y);
+  float r = 0.0;
+  for (int m = -1; m <= 2; m++) {
+    float row = 0.0;
+    for (int n = -1; n <= 2; n++) row += wx[n + 1] * fetch(i + ivec2(n, m));
+    r += wy[m + 1] * row;
+  }
+  return r;
+}
+
+vec3 shade(float v) {
+  float t = clamp(v * uGain, 0.0, 1.0);
+  return palette(t) * pow(t, uGamma);   // empty (t=0) -> black
+}
 
 void main() {
   vec2 uv = gl_FragCoord.xy / uResolution;
-  float field = fieldAt(uv);
-  float t = pow(clamp(field * uGain, 0.0, 1.0), uGamma);
-  vec3 col = palette(t);
+  vec3 col = shade(clamp(fieldCubic(uv), 0.0, 1.0));
 
-  // Soft bloom: a cheap blurred sample of the field added back as light. This
-  // gives the bright, high-fidelity luminous look without a separate pass.
-  if (uGlow > 0.0) {
+  if (uGlow > 0.0) {                      // soft bloom from a blurred field
     vec2 o = uSimTexel * 1.5;
-    float b = fieldAt(uv + vec2( o.x, 0.0)) + fieldAt(uv + vec2(-o.x, 0.0))
-            + fieldAt(uv + vec2(0.0,  o.y)) + fieldAt(uv + vec2(0.0, -o.y))
-            + fieldAt(uv + o) + fieldAt(uv - o)
-            + fieldAt(uv + vec2(o.x, -o.y)) + fieldAt(uv + vec2(-o.x, o.y));
-    b *= 0.125;
-    float bt = pow(clamp(b * uGain, 0.0, 1.0), uGamma);
-    col += palette(bt) * bt * uGlow;
+    float b = field(uv+vec2(o.x,0.)) + field(uv-vec2(o.x,0.))
+            + field(uv+vec2(0.,o.y)) + field(uv-vec2(0.,o.y))
+            + field(uv+o) + field(uv-o)
+            + field(uv+vec2(o.x,-o.y)) + field(uv+vec2(-o.x,o.y));
+    col += shade(b * 0.125) * uGlow;
   }
 
   col *= uExposure * uBrightness;
   vec2 q = uv - 0.5;
-  col *= 1.0 - uVignette * dot(q, q) * 2.0; // subtle vignette
+  col *= 1.0 - uVignette * dot(q, q) * 2.0;
   outColor = vec4(max(col, 0.0), 1.0);
 }`;
 
-// Build the programs we need.
-const progSim = program(VERT, CONFIG.rule === 'gray-scott' ? FRAG_GS : FRAG_LENIA);
+// Build both sim programs up front so switching is instant.
+const progLenia = program(VERT, FRAG_LENIA);
+const progGS    = program(VERT, FRAG_GS);
 const progColor = program(VERT, FRAG_COLOR);
+const simProg = () => state.rule === 'gray-scott' ? progGS : progLenia;
 
-// Empty VAO is required to draw with no attributes in WebGL2 core profile.
 const vao = gl.createVertexArray();
 gl.bindVertexArray(vao);
 
 /* ===========================================================================
    Ping-pong float textures
    =========================================================================== */
-
-let texA, texB, fboA, fboB, simW, simH;
+let texA, texB, simW, simH, src, dst;
 
 function makeTarget(w, h) {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, w, h, 0, gl.RG, gl.HALF_FLOAT, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, SIM_FILTER);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, SIM_FILTER);
+  // NEAREST is fine: the display pass does its own smooth bicubic upscaling.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
   const fbo = gl.createFramebuffer();
@@ -347,155 +377,129 @@ function allocate() {
   canvas.width = Math.max(2, Math.floor(window.innerWidth * dpr));
   canvas.height = Math.max(2, Math.floor(window.innerHeight * dpr));
 
-  // Simulation grid: a fraction of the canvas, capped on the long axis.
   let w = Math.max(8, Math.floor(canvas.width * CONFIG.simScale));
   let h = Math.max(8, Math.floor(canvas.height * CONFIG.simScale));
   const longAxis = Math.max(w, h);
   if (longAxis > CONFIG.maxSimDim) {
     const s = CONFIG.maxSimDim / longAxis;
-    w = Math.max(8, Math.floor(w * s));
-    h = Math.max(8, Math.floor(h * s));
+    w = Math.max(8, Math.floor(w * s)); h = Math.max(8, Math.floor(h * s));
   }
   simW = w; simH = h;
 
   if (texA) { gl.deleteTexture(texA.tex); gl.deleteFramebuffer(texA.fbo); }
   if (texB) { gl.deleteTexture(texB.tex); gl.deleteFramebuffer(texB.fbo); }
-  texA = makeTarget(w, h);
-  texB = makeTarget(w, h);
-
+  texA = makeTarget(w, h); texB = makeTarget(w, h);
   clearAndSeed();
 }
 
-let src, dst;
 function clearAndSeed() {
-  // Clear both buffers to the rule's "empty" state.
-  const base = CONFIG.rule === 'gray-scott' ? [1, 0, 0, 1] : [0, 0, 0, 1];
+  const base = state.rule === 'gray-scott' ? [1, 0, 0, 1] : [0, 0, 0, 1];
   for (const t of [texA, texB]) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
     gl.clearColor(base[0], base[1], base[2], base[3]);
     gl.clear(gl.COLOR_BUFFER_BIT);
   }
   src = texA; dst = texB;
-  // Stamp the whole field with soup on the next step.
   pendingSeed = { cx: simW / 2, cy: simH / 2, r: Math.max(simW, simH), amount: 1.0 };
   lastReseed = performance.now() / 1000;
 }
 
 /* ===========================================================================
-   System-data driven look (all offline)
+   Date/time-driven look (offline). Off by default; toggle with S.
    =========================================================================== */
-
 let battery = null;
-if (navigator.getBattery) {
-  navigator.getBattery().then(b => { battery = b; }).catch(() => {});
-}
+if (navigator.getBattery) navigator.getBattery().then(b => { battery = b; }).catch(() => {});
 
-const look = { palA: [0.5,0.5,0.5], palB: [0.5,0.5,0.5], palC: [1,1,1], palD: [0,0.33,0.67],
-               brightness: 1.0 };
-// Runtime, system-data-driven dynamics applied to the simulation each step.
-const dyn = { speed: 1.0, gmuShift: 0.0 };
+const look = { palA: [.5,.5,.5], palB: [.5,.5,.5], palC: [1,1,1], palD: [0,.33,.67], brightness: 1.0 };
+const dyn  = { speed: 1.0, gmuShift: 0.0 };
 
-// Fraction through the current year (0 = Jan 1, 1 = Dec 31). Drives "season".
 function yearFraction(d) {
-  const start = new Date(d.getFullYear(), 0, 1);
-  const end = new Date(d.getFullYear() + 1, 0, 1);
+  const start = new Date(d.getFullYear(), 0, 1), end = new Date(d.getFullYear() + 1, 0, 1);
   return (d - start) / (end - start);
 }
 
-function updateSystemData() {
+function updateLook() {
+  const p = palP();
+  look.palA = p.a; look.palB = p.b; look.palC = p.c;
   const sd = CONFIG.systemData;
   if (!sd.enabled) {
-    look.palA = [0.5,0.5,0.5]; look.palB = [0.5,0.5,0.5];
-    look.palC = [1,1,1]; look.palD = [0.0,0.33,0.67]; look.brightness = 1.0;
-    dyn.speed = 1.0; dyn.gmuShift = 0.0;
+    look.palD = p.d; look.brightness = 1.0; dyn.speed = 1.0; dyn.gmuShift = 0.0;
     return CONFIG.fps;
   }
   const now = new Date();
-  const tod = (now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds()) / 86400; // 0..1
-  const day = 0.5 - 0.5 * Math.cos(tod * 2 * Math.PI);   // 0 at midnight, 1 at noon
-  const yr = yearFraction(now);                          // 0..1 through the year
-  const season = Math.sin(yr * 2 * Math.PI);             // -1..1 seasonal swing
+  const tod = (now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds()) / 86400;
+  const day = 0.5 - 0.5 * Math.cos(tod * 2 * Math.PI);
+  const yr = yearFraction(now);
+  const season = Math.sin(yr * 2 * Math.PI);
 
-  // Brightness dims at night (kept high so it stays bright after dark).
   look.brightness = sd.nightDim + (1 - sd.nightDim) * day;
-
-  // Speed: faster around midday, calmer at night, with a seasonal lean.
-  // Clamped to a stable range so the integration never blows up or stalls.
   const rawSpeed = sd.speedNight + (sd.speedDay - sd.speedNight) * day + sd.speedSeason * season;
   dyn.speed = Math.max(0.5, Math.min(1.4, rawSpeed));
-
-  // "Other attributes": nudge Lenia's growth center across the seasons so the
-  // creatures change character through the year.
   dyn.gmuShift = sd.gmuSeasonSwing * season;
 
-  // Palette: a smooth cosine gradient. Phase rotates through the day AND across
-  // the year (season); warmth tracks daylight (cool at night, warm at midday).
-  look.palA = [0.5, 0.5, 0.5];
-  look.palB = [0.5, 0.5, 0.5];
-  look.palC = [1.0, 1.0, 1.0];
-  const hueShift = tod * sd.hueRotatePerDay + yr * sd.hueShiftPerYear;
-  const warm = 0.08 * day;
-  look.palD = [0.00 + hueShift + warm, 0.33 + hueShift, 0.67 + hueShift + warm];
+  const hue = tod * sd.hueRotatePerDay + yr * sd.hueShiftPerYear;
+  look.palD = [p.d[0] + hue, p.d[1] + hue, p.d[2] + hue];
 
-  // Battery-aware throttle (laptops): ease off when low and unplugged.
   let fps = CONFIG.fps;
-  if (sd.batteryThrottle && battery && !battery.charging && battery.level < sd.batteryLowLevel) {
-    fps = sd.batteryFps;
-  }
+  if (sd.batteryThrottle && battery && !battery.charging && battery.level < sd.batteryLowLevel) fps = sd.batteryFps;
   return fps;
 }
 
 /* ===========================================================================
    Render loop
    =========================================================================== */
+let pendingSeed = null, lastReseed = 0;
 
-let pendingSeed = null;
-let lastReseed = 0;
-
-function setCommonSimUniforms(p, time) {
+function setSeedUniforms(p) {
   gl.uniform1i(p._u('uState'), 0);
   gl.uniform2f(p._u('uTexel'), 1 / simW, 1 / simH);
-  gl.uniform1f(p._u('uTime'), time);
-  gl.uniform1f(p._u('uSeedBlob'), Math.max(3, CONFIG.lenia.R * 0.5));
+  gl.uniform1f(p._u('uTime'), performance.now() / 1000);
+  gl.uniform1f(p._u('uSeedScale'), state.rule === 'lenia' ? leniaP().R : 10);
   if (pendingSeed) {
     gl.uniform2f(p._u('uSeedCenter'), pendingSeed.cx, pendingSeed.cy);
     gl.uniform1f(p._u('uSeedRadius'), pendingSeed.r);
     gl.uniform1f(p._u('uSeedAmount'), pendingSeed.amount);
   } else {
-    gl.uniform1f(p._u('uSeedRadius'), 0);
-    gl.uniform1f(p._u('uSeedAmount'), 0);
+    gl.uniform1f(p._u('uSeedRadius'), 0); gl.uniform1f(p._u('uSeedAmount'), 0);
   }
 }
 
-function simStep(time) {
-  gl.useProgram(progSim);
+const ringBuf = new Float32Array(12);
+function simStep() {
+  const p = simProg();
+  gl.useProgram(p);
   gl.viewport(0, 0, simW, simH);
   gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, src.tex);
+  setSeedUniforms(p);
 
-  setCommonSimUniforms(progSim, time);
-  if (CONFIG.rule === 'gray-scott') {
-    const g = CONFIG.grayScott;
-    gl.uniform1f(progSim._u('uDu'), g.Du); gl.uniform1f(progSim._u('uDv'), g.Dv);
-    gl.uniform1f(progSim._u('uF'), g.F);   gl.uniform1f(progSim._u('uK'), g.k);
-    // Time-of-day speed scales the step (clamped to stay numerically stable).
-    gl.uniform1f(progSim._u('uDt'), g.dt * Math.min(dyn.speed, 1.4));
+  if (state.rule === 'gray-scott') {
+    const g = gsP();
+    gl.uniform1f(p._u('uDu'), 1.0); gl.uniform1f(p._u('uDv'), 0.5);
+    gl.uniform1f(p._u('uF'), g.F);  gl.uniform1f(p._u('uK'), g.k);
+    gl.uniform1f(p._u('uDt'), 1.0 * Math.min(dyn.speed, 1.4));
   } else {
-    const l = CONFIG.lenia;
-    gl.uniform1f(progSim._u('uR'), l.R);     gl.uniform1f(progSim._u('uKmu'), l.kmu);
-    gl.uniform1f(progSim._u('uKsig'), l.ksig);
-    gl.uniform1f(progSim._u('uGmu'), l.gmu + dyn.gmuShift); // seasonal character
-    gl.uniform1f(progSim._u('uGsig'), l.gsig);
-    gl.uniform1f(progSim._u('uDt'), l.dt * dyn.speed);      // time-of-day speed
+    const l = leniaP();
+    ringBuf.fill(0);
+    for (let i = 0; i < l.rings.length && i < 4; i++) {
+      ringBuf[i*3] = l.rings[i][0]; ringBuf[i*3+1] = l.rings[i][1]; ringBuf[i*3+2] = l.rings[i][2];
+    }
+    gl.uniform3fv(p._u('uRings'), ringBuf);
+    gl.uniform1i(p._u('uRingCount'), Math.min(l.rings.length, 4));
+    gl.uniform1f(p._u('uR'), l.R);
+    gl.uniform1f(p._u('uGmu'), l.gmu + dyn.gmuShift);
+    gl.uniform1f(p._u('uGsig'), l.gsig);
+    gl.uniform1f(p._u('uDt'), l.dt * dyn.speed);
   }
 
   gl.drawArrays(gl.TRIANGLES, 0, 3);
-  pendingSeed = null;          // a stamp only applies to one step
-  [src, dst] = [dst, src];     // ping-pong
+  pendingSeed = null;
+  [src, dst] = [dst, src];
 }
 
 function display() {
+  const lk = CONFIG.look;
   gl.useProgram(progColor);
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -503,14 +507,15 @@ function display() {
   gl.bindTexture(gl.TEXTURE_2D, src.tex);
   gl.uniform1i(progColor._u('uState'), 0);
   gl.uniform2f(progColor._u('uResolution'), canvas.width, canvas.height);
+  gl.uniform2f(progColor._u('uSimSize'), simW, simH);
   gl.uniform2f(progColor._u('uSimTexel'), 1 / simW, 1 / simH);
-  gl.uniform2f(progColor._u('uChannelMask'), CONFIG.rule === 'gray-scott' ? 0 : 1,
-                                             CONFIG.rule === 'gray-scott' ? 1 : 0);
-  gl.uniform1f(progColor._u('uGain'), CONFIG.look.gain);
-  gl.uniform1f(progColor._u('uGamma'), CONFIG.look.gamma);
-  gl.uniform1f(progColor._u('uExposure'), CONFIG.look.exposure);
-  gl.uniform1f(progColor._u('uGlow'), CONFIG.look.glow);
-  gl.uniform1f(progColor._u('uVignette'), CONFIG.look.vignette);
+  gl.uniform2f(progColor._u('uChannelMask'), state.rule === 'gray-scott' ? 0 : 1,
+                                             state.rule === 'gray-scott' ? 1 : 0);
+  gl.uniform1f(progColor._u('uGain'), lk.gain);
+  gl.uniform1f(progColor._u('uGamma'), lk.gamma);
+  gl.uniform1f(progColor._u('uExposure'), lk.exposure);
+  gl.uniform1f(progColor._u('uGlow'), lk.glow);
+  gl.uniform1f(progColor._u('uVignette'), lk.vignette);
   gl.uniform1f(progColor._u('uBrightness'), look.brightness);
   gl.uniform3fv(progColor._u('uPalA'), look.palA);
   gl.uniform3fv(progColor._u('uPalB'), look.palB);
@@ -519,69 +524,68 @@ function display() {
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
-let running = true;
-let lastFrame = 0;
-
+let running = true, lastFrame = 0;
 function frame(tMs) {
+  if (!running) return;            // chain self-stops when paused
   requestAnimationFrame(frame);
-  if (!running) return;
-
-  const targetFps = updateSystemData();
-  const minDelta = 1000 / targetFps;
-  if (tMs - lastFrame < minDelta) return;
+  const fps = updateLook();
+  if (tMs - lastFrame < 1000 / fps) return;
   lastFrame = tMs;
 
-  const time = tMs / 1000;
-
-  // Endless life: periodically drop a fresh patch of soup somewhere.
-  const rs = CONFIG.reseed;
+  const time = tMs / 1000, rs = CONFIG.reseed;
   if (!pendingSeed && time - lastReseed > rs.intervalSec) {
     lastReseed = time;
-    if (Math.random() < rs.probability) {
-      pendingSeed = {
-        cx: Math.random() * simW,
-        cy: Math.random() * simH,
-        r: rs.radiusFrac * Math.min(simW, simH),
-        amount: rs.amount,
-      };
-    }
+    if (Math.random() < rs.probability)
+      pendingSeed = { cx: Math.random()*simW, cy: Math.random()*simH,
+                      r: rs.radiusFrac * Math.min(simW, simH), amount: rs.amount };
   }
-
-  const steps = CONFIG.stepsPerFrame[CONFIG.rule] || 1;
-  for (let i = 0; i < steps; i++) simStep(time);
+  const steps = CONFIG.stepsPerFrame[state.rule] || 1;
+  for (let i = 0; i < steps; i++) simStep();
   display();
 }
 
 /* ===========================================================================
-   Lifecycle
+   On-screen hint + live controls
    =========================================================================== */
+const hud = document.getElementById('hud');
+let hudTimer = null;
+function showHud(ms = 4000) {
+  const name = state.rule === 'gray-scott' ? `Gray-Scott · ${gsP().name}` : `Lenia · ${leniaP().name}`;
+  const sd = CONFIG.systemData.enabled ? 'on' : 'off';
+  hud.innerHTML = `<b>${name}</b> &nbsp;·&nbsp; Palette: <b>${palP().name}</b> &nbsp;·&nbsp; date/time fx: <b>${sd}</b>`
+    + `<br><span class="keys">[G] system &nbsp; [P] preset &nbsp; [C] palette &nbsp; [S] date/time fx &nbsp; [R] reseed &nbsp; [Space] pause &nbsp; [H] hide</span>`;
+  hud.style.opacity = '1';
+  clearTimeout(hudTimer);
+  if (ms) hudTimer = setTimeout(() => { hud.style.opacity = '0'; }, ms);
+}
 
-// Pause when hidden to use zero GPU in the background.
-document.addEventListener('visibilitychange', () => { running = !document.hidden; });
-
-// Debounced resize.
-let resizeTimer = null;
-window.addEventListener('resize', () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(allocate, 200);
-});
-
-// Handy manual controls (irrelevant to a screensaver, nice while tweaking):
-//   r = reseed everything   ·   space = pause/resume
 window.addEventListener('keydown', e => {
-  if (e.key === 'r') clearAndSeed();
-  if (e.code === 'Space') { running = !running; e.preventDefault(); }
+  switch (e.key.toLowerCase()) {
+    case 'g': state.rule = state.rule === 'lenia' ? 'gray-scott' : 'lenia'; clearAndSeed(); showHud(); break;
+    case 'p':
+      if (state.rule === 'lenia') state.leniaIdx = (state.leniaIdx + 1) % LENIA_PRESETS.length;
+      else state.gsIdx = (state.gsIdx + 1) % GS_PRESETS.length;
+      clearAndSeed(); showHud(); break;
+    case 'c': state.palIdx = (state.palIdx + 1) % PALETTES.length; showHud(); break;
+    case 's': CONFIG.systemData.enabled = !CONFIG.systemData.enabled; showHud(); break;
+    case 'r': clearAndSeed(); showHud(); break;
+    case 'h': hud.style.opacity = hud.style.opacity === '1' ? '0' : (showHud(0), '1'); break;
+    case ' ':
+      e.preventDefault();
+      if (running) { running = false; }
+      else { running = true; requestAnimationFrame(frame); }
+      showHud(); break;
+  }
 });
-// Click drops a soup patch where you click (in case you want to interact).
-canvas.addEventListener('pointerdown', e => {
-  const rect = canvas.getBoundingClientRect();
-  const sx = (e.clientX - rect.left) / rect.width * simW;
-  const sy = (1 - (e.clientY - rect.top) / rect.height) * simH; // flip Y
-  pendingSeed = { cx: sx, cy: sy, r: CONFIG.reseed.radiusFrac * Math.min(simW, simH),
-                  amount: CONFIG.reseed.amount };
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { running = false; }
+  else if (!running) { running = true; requestAnimationFrame(frame); }
 });
+let resizeTimer = null;
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(allocate, 200); });
 
 allocate();
+showHud(6000);          // greet with the controls
 requestAnimationFrame(frame);
 </script>
 </body>

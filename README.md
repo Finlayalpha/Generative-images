@@ -88,9 +88,18 @@ Open `index.html` and edit the `CONFIG` object at the top. Highlights:
 
 ### Live controls (handy while tuning)
 
+A hint bar appears on screen on load and whenever you press a key.
+
+- <kbd>G</kbd> — switch system (Lenia ⇄ Gray-Scott)
+- <kbd>P</kbd> — cycle presets for the current system
+- <kbd>C</kbd> — cycle colour palettes
+- <kbd>S</kbd> — toggle the date/time effects (off by default)
 - <kbd>R</kbd> — reseed everything
 - <kbd>Space</kbd> — pause / resume
-- Click — drop a patch of fresh soup where you click
+- <kbd>H</kbd> — show / hide the hint bar
+
+Found a combination you like? Set it as the startup default via `CONFIG.rule`,
+`CONFIG.leniaPreset` / `CONFIG.gsPreset`, and `CONFIG.palette`.
 
 ## Notes
 
