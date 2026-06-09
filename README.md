@@ -97,7 +97,6 @@ A hint bar appears on screen on load and whenever you press a key.
 - <kbd>R</kbd> — reseed everything
 - <kbd>Space</kbd> — pause / resume
 - <kbd>H</kbd> — show / hide the hint bar
-- Click — drop a patch of fresh soup where you click
 
 Found a combination you like? Set it as the startup default via `CONFIG.rule`,
 `CONFIG.leniaPreset` / `CONFIG.gsPreset`, and `CONFIG.palette`.

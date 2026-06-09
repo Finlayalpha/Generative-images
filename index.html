@@ -49,7 +49,6 @@
      G  switch system (Lenia <-> Gray-Scott)      P  cycle preset
      C  cycle palette                             S  toggle date/time effects
      R  reseed        Space  pause/resume         H  show/hide this hint
-     click  drop a fresh patch where you click
 
    Tweak defaults in CONFIG / the PRESETS / PALETTES below.
    =========================================================================== */
@@ -72,10 +71,10 @@ const CONFIG = {
 
   // ---- Keep it endless: drop fresh "soup" now and then ---------------------
   reseed: {
-    intervalSec: 4,        // how often to consider dropping a patch
-    probability: 0.9,
-    radiusFrac: 0.14,      // patch radius as a fraction of the smaller sim axis
-    amount: 0.7,
+    intervalSec: 7,        // how often to consider blending in a fresh patch
+    probability: 0.85,
+    radiusFrac: 0.2,       // patch radius as a fraction of the smaller sim axis
+    amount: 0.6,           // <1 so patches blend in rather than overwrite
   },
 
   // ---- Look ----------------------------------------------------------------
@@ -103,16 +102,17 @@ const CONFIG = {
 };
 
 // Lenia presets. rings = list of [mu, sigma, peak] concentric kernel rings.
-// agitation = tiny per-step noise that prevents the field from freezing solid.
+// Parameters follow Bert Chan's reference WebGL Lenia; seeded with smooth,
+// creature-scale noise so lifeforms self-organize and move.
 const LENIA_PRESETS = [
-  { name: 'Flux',     R: 14, dt: 0.14, gmu: 0.15, gsig: 0.020,
-    rings: [[0.5, 0.15, 1.0]], agitation: 0.012 },
-  { name: 'Orbium',   R: 13, dt: 0.10, gmu: 0.15, gsig: 0.017,
-    rings: [[0.5, 0.15, 1.0]], agitation: 0.0 },
-  { name: 'Geminium', R: 18, dt: 0.12, gmu: 0.26, gsig: 0.036,
-    rings: [[0.1667, 0.0667, 0.5], [0.5, 0.0667, 1.0], [0.8333, 0.0667, 0.667]], agitation: 0.0 },
-  { name: 'Pulse',    R: 16, dt: 0.13, gmu: 0.14, gsig: 0.015,
-    rings: [[0.5, 0.12, 1.0]], agitation: 0.02 },
+  { name: 'Orbium',   R: 15, dt: 0.10, gmu: 0.14, gsig: 0.014,
+    rings: [[0.5, 0.15, 1.0]] },
+  { name: 'Geminium', R: 18, dt: 0.10, gmu: 0.26, gsig: 0.036,
+    rings: [[0.1667, 0.0667, 0.5], [0.5, 0.0667, 1.0], [0.8333, 0.0667, 0.667]] },
+  { name: 'Tricircle', R: 16, dt: 0.10, gmu: 0.16, gsig: 0.018,
+    rings: [[0.25, 0.12, 0.5], [0.55, 0.10, 1.0], [0.85, 0.08, 0.6]] },
+  { name: 'Wide',     R: 20, dt: 0.10, gmu: 0.15, gsig: 0.016,
+    rings: [[0.5, 0.18, 1.0]] },
 ];
 
 // Gray-Scott presets (F, k). These are reliably fluid and ever-moving.
@@ -197,19 +197,27 @@ uniform float uTime;
 uniform vec2  uSeedCenter;  // sim pixels
 uniform float uSeedRadius;  // sim pixels (0 = no stamp)
 uniform float uSeedAmount;  // 0..1
-uniform float uSeedBlob;    // soup blob size in sim pixels
+uniform float uSeedScale;   // seed-noise feature size in sim pixels (~ kernel R)
 out vec4 outColor;
 
 float hash(vec2 p) { p = fract(p * vec2(123.34, 345.45)); p += dot(p, p + 34.345); return fract(p.x * p.y); }
+// Smooth value noise (0..1). Seeding Lenia with smooth, creature-scale noise
+// (rather than hard blobs) is what lets it self-organize into moving lifeforms.
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  float a = hash(i), b = hash(i + vec2(1,0)), c = hash(i + vec2(0,1)), d = hash(i + vec2(1,1));
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
 bool inStamp() {
   if (uSeedRadius <= 0.0 || uSeedAmount <= 0.0) return false;
   return distance(gl_FragCoord.xy, uSeedCenter) <= uSeedRadius;
 }`;
 
-// ---- Lenia (multi-ring kernel + agitation) ---------------------------------
+// ---- Lenia (multi-ring kernel) ---------------------------------------------
 const FRAG_LENIA = `#version 300 es
 ${COMMON}
-uniform float uR, uGmu, uGsig, uDt, uAgitation;
+uniform float uR, uGmu, uGsig, uDt;
 uniform int   uRingCount;
 uniform vec3  uRings[4];     // (mu, sigma, peak) per ring
 
@@ -238,13 +246,9 @@ void main() {
   float g = 2.0 * exp(-0.5 * pow((u - uGmu) / uGsig, 2.0)) - 1.0;
   float na = clamp(a + uDt * g, 0.0, 1.0);
 
-  // Tiny agitation keeps the field from settling into static blobs.
-  if (uAgitation > 0.0)
-    na = clamp(na + (hash(gl_FragCoord.xy * 0.37 + uTime * 11.0) - 0.5) * uAgitation, 0.0, 1.0);
-
+  // Reseed with smooth, creature-scale noise so new lifeforms self-organize.
   if (inStamp()) {
-    vec2 cell = floor(gl_FragCoord.xy / uSeedBlob);
-    float soup = hash(cell) > 0.55 ? hash(cell + 11.7 + floor(uTime)) : 0.0;
+    float soup = 0.85 * vnoise(gl_FragCoord.xy / uSeedScale + vec2(floor(uTime) * 3.7));
     na = mix(na, soup, uSeedAmount);
   }
   outColor = vec4(na, 0.0, 0.0, 1.0);
@@ -265,8 +269,8 @@ void main() {
   v += (uDv * lap.g + uvv - (uF + uK) * v) * uDt;
   u = clamp(u, 0.0, 1.0); v = clamp(v, 0.0, 1.0);
   if (inStamp()) {
-    vec2 cell = floor(gl_FragCoord.xy / uSeedBlob);
-    if (hash(cell + floor(uTime)) > 0.55) { u = mix(u, 0.5, uSeedAmount); v = mix(v, 0.5, uSeedAmount); }
+    float n = vnoise(gl_FragCoord.xy / uSeedScale + vec2(floor(uTime) * 3.7));
+    if (n > 0.5) { u = mix(u, 0.5, uSeedAmount); v = mix(v, 0.45, uSeedAmount); }
   }
   outColor = vec4(u, v, 0.0, 1.0);
 }`;
@@ -450,7 +454,7 @@ function setSeedUniforms(p) {
   gl.uniform1i(p._u('uState'), 0);
   gl.uniform2f(p._u('uTexel'), 1 / simW, 1 / simH);
   gl.uniform1f(p._u('uTime'), performance.now() / 1000);
-  gl.uniform1f(p._u('uSeedBlob'), Math.max(3, (state.rule === 'lenia' ? leniaP().R * 0.5 : 5)));
+  gl.uniform1f(p._u('uSeedScale'), state.rule === 'lenia' ? leniaP().R : 10);
   if (pendingSeed) {
     gl.uniform2f(p._u('uSeedCenter'), pendingSeed.cx, pendingSeed.cy);
     gl.uniform1f(p._u('uSeedRadius'), pendingSeed.r);
@@ -487,7 +491,6 @@ function simStep() {
     gl.uniform1f(p._u('uGmu'), l.gmu + dyn.gmuShift);
     gl.uniform1f(p._u('uGsig'), l.gsig);
     gl.uniform1f(p._u('uDt'), l.dt * dyn.speed);
-    gl.uniform1f(p._u('uAgitation'), l.agitation || 0.0);
   }
 
   gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -574,13 +577,6 @@ window.addEventListener('keydown', e => {
       showHud(); break;
   }
 });
-canvas.addEventListener('pointerdown', e => {
-  const rect = canvas.getBoundingClientRect();
-  pendingSeed = { cx: (e.clientX - rect.left) / rect.width * simW,
-                  cy: (1 - (e.clientY - rect.top) / rect.height) * simH,
-                  r: CONFIG.reseed.radiusFrac * Math.min(simW, simH), amount: CONFIG.reseed.amount };
-});
-
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { running = false; }
   else if (!running) { running = true; requestAnimationFrame(frame); }
