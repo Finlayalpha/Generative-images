@@ -1,63 +1,34 @@
-# Generative — a living wallpaper
+# Lenia — a living wallpaper
 
-An endlessly evolving, GPU-light generative artwork inspired by Conway's Game
-of Life. One self-contained file (`index.html`), **no dependencies, fully
-offline**. Built to be a MacBook screensaver / live wallpaper.
+A hands-off, endlessly running generative wallpaper built on **Lenia**, the
+continuous generalization of Conway's Game of Life. One self-contained file
+(`index.html`), **no dependencies, fully offline**, **no controls or settings** —
+it just runs. Built to be a MacBook screensaver / live wallpaper.
 
-## The idea: the fewest rules, the most beauty
+## What it does
 
-Conway's Game of Life is gorgeous but blocky — it's *discrete* in space (a grid),
-state (alive/dead), and time (ticks), so it tends to freeze into static junk.
-The natural way to make it fluid and endlessly alive is to make all three
-**continuous**. That generalization already exists: **Lenia** (Bert Chan, 2018).
+It seeds a school of real Lenia **lifeforms**, lets them swim and wrap around
+the screen, then slowly cycles through a zoo of different creatures forever,
+while the colour drifts gently through the spectrum.
 
-Lenia collapses to essentially **one update rule**:
+- **Real creatures, seeded** — Orbium, Scutium, Discutium, Parorbium (from Bert
+  Chan's collection), embedded as run-length-encoded patterns and decoded at load.
+- **A school that glides** — copies are stamped with a shared orientation so they
+  travel together on a torus (wrap-around), rather than colliding into mush.
+- **Slow cycling** — every ~30s it fades to black, switches creature, and reseeds.
+- **Tasteful colour** — a single accent colour (black → accent → white-hot cores)
+  that slowly rotates hue over minutes. No garish per-pixel rainbow.
+- **Light** — runs a small simulation grid and upscales with smooth bicubic
+  filtering, so it stays easy on the GPU. Pauses when the tab/window is hidden.
 
-1. **Convolve** the field with a ring-shaped kernel (a smooth neighbourhood).
-2. Pass the result through **one** smooth, bell-shaped *growth* function.
-3. Add a sliver of that back to the field.
+## Why the creatures are seeded (not "emergent")
 
-Tune three numbers (kernel radius, growth centre `μ`, growth width `σ`) and you
-get smooth, swimming, morphing "lifeforms." Game of Life itself is just one
-special parameter setting of this — so Lenia is the honest answer to *"what is
-the minimum number of rules for the maximally beautiful result?"*
-
-It all runs on the GPU with ping-pong float textures, so it's very light.
-
-## Keeping it alive: the "flow" forcing
-
-Lenia has one quirk worth knowing: seeded from noise it tends to **crystallize**
-into a static Turing pattern (worms and spots that stop moving). To keep it
-alive forever, each step we add a gentle, slowly-drifting, large-scale
-smooth-noise field — the **flow** forcing. Because that nudge is *time-varying*,
-the system can never reach a fixed point, so it keeps writhing and reorganizing.
-
-- `CONFIG.flow.amount` (and each preset's `flow`) sets the strength.
-- `0` = pure Lenia (will eventually freeze); higher = livelier, more turbulent.
-- Adjust it live with the <kbd>[</kbd> and <kbd>]</kbd> keys.
-
-## What makes it bright, fluid and high-fidelity
-
-- Runs the simulation at a fraction of screen resolution and upscales with
-  **bicubic** filtering — smooth even on GPUs without float linear filtering.
-- A cheap **bloom/glow** pass gives bright regions a luminous feel.
-- **Endless by design:** the flow forcing (plus occasional fresh growth) means
-  the world never dies and never freezes.
-
-## Colour, speed & character follow the clock and calendar (offline)
-
-Everything below reads `new Date()` — no network required:
-
-| Reads | Drives |
-| --- | --- |
-| Time of day | Palette phase + warmth (cool at night → warm at midday) |
-| Time of day | Brightness (dims after dark, bright by day) |
-| Time of day | **Simulation speed** (calmer at night, faster around midday) |
-| Day of year (season) | Extra palette rotation across the year |
-| Day of year (season) | Nudges Lenia's growth centre, so the creatures change character through the seasons |
-| Battery (laptops) | Throttles FPS when unplugged and low, to save power |
-
-All of these are tunable in the `CONFIG.systemData` block.
+Lenia's gliders look emergent in videos, but they aren't reliably so: random
+"soup" almost always relaxes into a **static Turing pattern**. The famous
+lifeforms occupy a tiny corner of parameter space and are found by deliberate
+search/evolution, then **seeded** as specific patterns. So this wallpaper embeds
+the real patterns and plays them, which is how those videos are actually made.
+(See the notes/links at the bottom.)
 
 ## Run it on macOS
 
@@ -69,7 +40,7 @@ The file is offline-first: once it's on disk it never touches the network.
 2. System Settings → **Screen Saver** → choose **WebViewScreenSaver** → *Options*.
 3. Add a URL pointing at this file on disk, e.g.
    `file:///Users/yourname/Generative-images/index.html`
-   (find the exact path by running `pwd` in this folder and appending `/index.html`).
+   (run `pwd` in this folder and append `/index.html`).
 
 ### As a live desktop wallpaper — [Plash](https://github.com/sindresorhus/Plash) (free)
 
@@ -82,61 +53,29 @@ The file is offline-first: once it's on disk it never touches the network.
 Double-click `index.html` to open it in Safari/Chrome/Firefox, then use your
 browser's full-screen shortcut.
 
-## Customise it
+## Tuning (optional — edit the `CONFIG` block at the top of `index.html`)
 
-Open `index.html` and edit the `CONFIG` object at the top. Highlights:
+- `simLongAxis` — sim resolution on the long side. **Smaller = bigger creatures
+  and lighter on the GPU**; larger = more, smaller creatures.
+- `cycleSec` — seconds each creature is shown before switching.
+- `seedCount` — how many creatures make up the school.
+- `look.hueSpeed` — how fast the colour drifts (1/240 ≈ a full cycle every 4 min).
+- `look.gain` / `gamma` / `glow` / `vignette` — brightness, glow and framing.
 
-- `simScale`, `maxSimDim`, `maxDPR`, `fps` → performance vs. fidelity.
-- `flow: { amount, scale, speed }` → the liveliness / never-freeze forcing.
-- `LENIA_PRESETS` → each has `R, dt, gmu, gsig, rings, flow`. `gmu`/`gsig` are
-  the heart of the behaviour; small changes matter a lot.
-- `look: { gain, gamma, exposure, glow, vignette }` → brightness and bloom.
-- `systemData` → how the clock/calendar/battery drive colour, speed, etc.
-  Set `enabled: false` for a constant look.
-
-### Live controls (handy while tuning)
-
-A hint bar appears on screen on load and whenever you press a key.
-
-- <kbd>P</kbd> — cycle Lenia presets
-- <kbd>C</kbd> — cycle colour palettes
-- <kbd>[</kbd> / <kbd>]</kbd> — less / more flow (liveliness)
-- <kbd>S</kbd> — toggle the date/time effects (off by default)
-- <kbd>R</kbd> — reseed
-- <kbd>Space</kbd> — pause / resume
-- <kbd>H</kbd> — show / hide the hint bar
-
-Found a combination you like? Set it as the startup default via
-`CONFIG.leniaPreset` and `CONFIG.palette` (and tune `CONFIG.flow.amount`).
-
-### Tuning it while it's your wallpaper / screensaver
-
-The live hotkeys only reach the page when its window has **keyboard focus**, so:
-
-- **Preview tab (best for tuning):** open `index.html` in a normal browser tab
-  and use the hotkeys freely. Your tweaks are **saved to `localStorage`**, so a
-  reload keeps them.
-- **URL parameters:** lock in a look without editing the file by appending
-  query params, e.g. `index.html?preset=0&palette=2&flow=1.5&datetime=0`
-  (`preset`/`palette` are indices, `flow` is a multiplier, `datetime` is `0`/`1`).
-  Point Plash/WebViewScreenSaver at that URL.
-- **Plash live tuning:** Plash wallpapers are click-through by default. Enable
-  **Browsing Mode** from Plash's menu-bar icon to interact with the live
-  wallpaper (then the hotkeys work); turn it off when done.
-- **Screensaver caveat:** a screensaver only runs while idle, and *any* key or
-  mouse movement exits it — so you can't tune it live there. Dial it in via a
-  preview tab or URL params, then let the screensaver use that.
+To add more creatures, append `{ name, m, s, cells }` entries to `CREATURES`
+(single-kernel `R=13` creatures from Chan's collection drop straight in).
 
 ## Notes
 
-- Requires a browser with **WebGL2** and float render targets (any recent
-  Safari, Chrome, or Firefox on a modern Mac). A message is shown if unavailable.
-- If it ever looks too static, press <kbd>]</kbd> to raise the flow; too noisy,
-  press <kbd>[</kbd>. If it's too sparse/busy, nudge a preset's `gmu` by ±0.005.
+- Requires **WebGL2** + float textures (any recent Safari/Chrome/Firefox on a
+  modern Mac). A message is shown if unavailable.
+- Creature patterns are decoded from Chan's RLE "cells" format; values are 0–255
+  mapped to 0–1.
 
 ## Credits / further reading
 
 - Lenia — Bert Wang-Chak Chan: <https://chakazul.github.io/lenia.html> ·
-  <https://en.wikipedia.org/wiki/Lenia>
+  creature data: <https://github.com/Chakazul/Lenia>
+- "Soup settles into Turing patterns; creatures are rare and seeded":
+  <https://arxiv.org/pdf/2510.00794> · Lenia paper: <https://arxiv.org/pdf/1812.05433>
 - Conway's Game of Life: <https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life>
-- Cosine palettes — Inigo Quilez: <https://iquilezles.org/articles/palettes/>
