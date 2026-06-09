@@ -3,19 +3,18 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Generative — Living Wallpaper</title>
+<title>Generative — Living Wallpaper (Lenia)</title>
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  html, body, canvas { cursor: none; } /* hide cursor for screensaver use */
+  html, body, canvas { cursor: none; }
   #c { display: block; width: 100vw; height: 100vh; }
   #fallback {
     position: fixed; inset: 0; display: none; place-items: center;
     color: #9aa; font: 14px/1.5 -apple-system, system-ui, sans-serif; text-align: center; padding: 2rem;
   }
-  /* On-screen hint / status. Fades out by itself; press H to toggle. */
   #hud {
-    position: fixed; left: 18px; bottom: 16px; max-width: 90vw;
+    position: fixed; left: 18px; bottom: 16px; max-width: 92vw;
     color: rgba(255,255,255,0.82); font: 12px/1.5 -apple-system, system-ui, sans-serif;
     background: rgba(0,0,0,0.35); padding: 8px 12px; border-radius: 8px;
     backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
@@ -34,94 +33,79 @@
 <script>
 "use strict";
 /* ===========================================================================
-   Generative — a living, endlessly evolving wallpaper.  One file, no
-   dependencies, fully offline.
+   Generative — a living, endlessly evolving Lenia wallpaper.
+   One file, no dependencies, fully offline.
 
-   Two "minimum-rule" systems you can switch between live:
+   LENIA is a continuous generalization of Conway's Game of Life. One update
+   rule per step:
+     1. Convolve the field with a (multi-)ring kernel  -> neighbourhood density u
+     2. Pass u through a smooth bell-shaped growth function G(u) in [-1, +1]
+     3. field += dt * G(u)   (clamped to [0,1])
 
-     • LENIA  — a continuous generalization of Conway's Game of Life. One
-                update rule: convolve with a (multi-)ring kernel, pass through a
-                smooth bell-shaped growth function, add a sliver back.
-     • GRAY-SCOTT — reaction-diffusion. Two coupled equations -> coral/Turing
-                patterns. Reliably fluid and ever-moving.
+   The catch: Lenia seeded from noise tends to *crystallize* into a static
+   Turing pattern. To keep it alive forever we add a gentle, slowly-drifting
+   smooth-noise "flow" forcing each step, so the field can never settle into a
+   fixed point. Tune it live with [ and ].
 
-   Live controls (also shown on screen):
-     G  switch system (Lenia <-> Gray-Scott)      P  cycle preset
-     C  cycle palette                             S  toggle date/time effects
-     R  reseed        Space  pause/resume         H  show/hide this hint
-
-   Tweak defaults in CONFIG / the PRESETS / PALETTES below.
+   Controls (also shown on screen):
+     P  cycle preset      C  cycle palette       S  toggle date/time effects
+     [ ]  less / more flow (liveliness)          R  reseed
+     Space  pause/resume  H  show/hide hint
    =========================================================================== */
 
 const CONFIG = {
-  // Which system & presets to start with (indices into the arrays below).
-  rule: 'lenia',           // 'lenia' | 'gray-scott'
   leniaPreset: 0,
-  gsPreset: 0,
   palette: 0,
 
-  // ---- Performance (the "don't bog down my computer" knobs) ----------------
-  // The sim runs at a fraction of screen res and is upscaled with smooth
-  // bicubic filtering, so a low simScale stays smooth AND light.
-  simScale: 0.5,
-  maxSimDim: 800,          // hard cap on the longest sim axis
-  maxDPR: 1.5,             // cap device pixel ratio for the display pass
+  // ---- Performance ---------------------------------------------------------
+  simScale: 0.5,           // sim resolution as a fraction of screen (lower = lighter)
+  maxSimDim: 800,          // cap on the longest sim axis
+  maxDPR: 1.5,
   fps: 30,
-  stepsPerFrame: { lenia: 1, 'gray-scott': 8 },
+  stepsPerFrame: 1,
 
-  // ---- Keep it endless: drop fresh "soup" now and then ---------------------
+  // ---- Flow forcing: the "never static" mechanism --------------------------
+  // A slow, large-scale, time-varying smooth-noise field nudged into the state
+  // each step. Keeps lifeforms perpetually drifting and reorganizing.
+  flow: {
+    amount: 0.02,          // per-step strength (0 = pure Lenia, will crystallize)
+    scale: 2.6,            // feature size as a multiple of kernel radius R
+    speed: 0.06,           // how fast the forcing pattern drifts
+  },
+
+  // ---- Occasional fresh growth (keeps variety / endlessness) ---------------
   reseed: {
-    intervalSec: 7,        // how often to consider blending in a fresh patch
-    probability: 0.85,
-    radiusFrac: 0.2,       // patch radius as a fraction of the smaller sim axis
-    amount: 0.6,           // <1 so patches blend in rather than overwrite
+    intervalSec: 12,
+    probability: 0.7,
+    radiusFrac: 0.22,
+    amount: 0.6,
   },
 
   // ---- Look ----------------------------------------------------------------
-  // Empty space is black; field value drives brightness + colour up a palette.
-  look: {
-    gain: 1.4,     // contrast of the field before colouring
-    gamma: 0.85,   // brightness ramp (<1 lifts mids / more glow)
-    exposure: 1.15,
-    glow: 0.5,     // soft bloom around bright regions
-    vignette: 0.12,
-  },
+  look: { gain: 1.4, gamma: 0.85, exposure: 1.15, glow: 0.5, vignette: 0.12 },
 
-  // ---- Date/time modulation (all offline). OFF by default -------------------
-  // When enabled, colour/brightness/speed and a seasonal parameter drift follow
-  // new Date(). Toggle live with S.
+  // ---- Date/time modulation (offline). OFF by default; toggle with S -------
   systemData: {
     enabled: false,
     nightDim: 0.72,
-    hueRotatePerDay: 1.0,
-    hueShiftPerYear: 1.0,
+    hueRotatePerDay: 1.0, hueShiftPerYear: 1.0,
     speedDay: 1.35, speedNight: 0.7, speedSeason: 0.2,
     gmuSeasonSwing: 0.012,
     batteryThrottle: true, batteryLowLevel: 0.30, batteryFps: 20,
   },
 };
 
-// Lenia presets. rings = list of [mu, sigma, peak] concentric kernel rings.
-// Parameters follow Bert Chan's reference WebGL Lenia; seeded with smooth,
-// creature-scale noise so lifeforms self-organize and move.
+// Lenia presets. rings = concentric kernel rings as [mu, sigma, peak].
+// flow = a per-preset default forcing strength (static-prone presets need more).
 const LENIA_PRESETS = [
-  { name: 'Orbium',   R: 15, dt: 0.10, gmu: 0.14, gsig: 0.014,
-    rings: [[0.5, 0.15, 1.0]] },
-  { name: 'Geminium', R: 18, dt: 0.10, gmu: 0.26, gsig: 0.036,
-    rings: [[0.1667, 0.0667, 0.5], [0.5, 0.0667, 1.0], [0.8333, 0.0667, 0.667]] },
+  { name: 'Orbium',    R: 15, dt: 0.10, gmu: 0.14, gsig: 0.014,
+    rings: [[0.5, 0.15, 1.0]], flow: 0.018 },
+  { name: 'Wide',      R: 18, dt: 0.10, gmu: 0.15, gsig: 0.016,
+    rings: [[0.5, 0.18, 1.0]], flow: 0.022 },
   { name: 'Tricircle', R: 16, dt: 0.10, gmu: 0.16, gsig: 0.018,
-    rings: [[0.25, 0.12, 0.5], [0.55, 0.10, 1.0], [0.85, 0.08, 0.6]] },
-  { name: 'Wide',     R: 20, dt: 0.10, gmu: 0.15, gsig: 0.016,
-    rings: [[0.5, 0.18, 1.0]] },
-];
-
-// Gray-Scott presets (F, k). These are reliably fluid and ever-moving.
-const GS_PRESETS = [
-  { name: 'Mitosis',  F: 0.0367, k: 0.0649 },
-  { name: 'Coral',    F: 0.0545, k: 0.062  },
-  { name: 'Worms',    F: 0.058,  k: 0.065  },
-  { name: 'Waves',    F: 0.014,  k: 0.054  },
-  { name: 'Solitons', F: 0.030,  k: 0.062  },
+    rings: [[0.25, 0.12, 0.5], [0.55, 0.10, 1.0], [0.85, 0.08, 0.6]], flow: 0.026 },
+  { name: 'Geminium',  R: 18, dt: 0.10, gmu: 0.26, gsig: 0.036,
+    rings: [[0.1667, 0.0667, 0.5], [0.5, 0.0667, 1.0], [0.8333, 0.0667, 0.667]], flow: 0.035 },
 ];
 
 // Inigo-Quilez cosine palettes: colour = a + b*cos(2pi*(c*t + d)).
@@ -137,14 +121,13 @@ const PALETTES = [
    Runtime state
    =========================================================================== */
 const state = {
-  rule: CONFIG.rule,
   leniaIdx: CONFIG.leniaPreset,
-  gsIdx: CONFIG.gsPreset,
   palIdx: CONFIG.palette,
+  flowMul: 1.0,            // live multiplier for flow (adjust with [ and ])
 };
 const leniaP = () => LENIA_PRESETS[state.leniaIdx];
-const gsP    = () => GS_PRESETS[state.gsIdx];
 const palP   = () => PALETTES[state.palIdx];
+const flowAmt = () => leniaP().flow * state.flowMul;
 
 /* ===========================================================================
    WebGL plumbing
@@ -155,7 +138,7 @@ const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: 
 if (!gl) { document.getElementById('fallback').style.display = 'grid'; throw new Error('WebGL2 unavailable'); }
 
 const extCBF = gl.getExtension('EXT_color_buffer_float');
-gl.getExtension('OES_texture_half_float_linear'); // nice-to-have; bicubic makes us robust without it
+gl.getExtension('OES_texture_half_float_linear');
 if (!extCBF) {
   const f = document.getElementById('fallback');
   f.style.display = 'grid';
@@ -182,44 +165,32 @@ function program(vsrc, fsrc) {
   return p;
 }
 
-// Fullscreen triangle from gl_VertexID — no vertex buffers.
 const VERT = `#version 300 es
 void main() {
   vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }`;
 
-const COMMON = `
+// ---- Lenia simulation ------------------------------------------------------
+const FRAG_LENIA = `#version 300 es
 precision highp float;
 uniform sampler2D uState;
-uniform vec2  uTexel;       // 1.0 / simSize
+uniform vec2  uTexel;
 uniform float uTime;
-uniform vec2  uSeedCenter;  // sim pixels
-uniform float uSeedRadius;  // sim pixels (0 = no stamp)
-uniform float uSeedAmount;  // 0..1
-uniform float uSeedScale;   // seed-noise feature size in sim pixels (~ kernel R)
+uniform float uR, uGmu, uGsig, uDt;
+uniform int   uRingCount;
+uniform vec3  uRings[4];                 // (mu, sigma, peak) per ring
+uniform float uFlow, uFlowScale, uFlowSpeed;
+uniform vec2  uSeedCenter; uniform float uSeedRadius, uSeedAmount, uSeedScale;
 out vec4 outColor;
 
 float hash(vec2 p) { p = fract(p * vec2(123.34, 345.45)); p += dot(p, p + 34.345); return fract(p.x * p.y); }
-// Smooth value noise (0..1). Seeding Lenia with smooth, creature-scale noise
-// (rather than hard blobs) is what lets it self-organize into moving lifeforms.
 float vnoise(vec2 p) {
   vec2 i = floor(p), f = fract(p);
   float a = hash(i), b = hash(i + vec2(1,0)), c = hash(i + vec2(0,1)), d = hash(i + vec2(1,1));
   vec2 u = f * f * (3.0 - 2.0 * f);
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
-bool inStamp() {
-  if (uSeedRadius <= 0.0 || uSeedAmount <= 0.0) return false;
-  return distance(gl_FragCoord.xy, uSeedCenter) <= uSeedRadius;
-}`;
-
-// ---- Lenia (multi-ring kernel) ---------------------------------------------
-const FRAG_LENIA = `#version 300 es
-${COMMON}
-uniform float uR, uGmu, uGsig, uDt;
-uniform int   uRingCount;
-uniform vec3  uRings[4];     // (mu, sigma, peak) per ring
 
 void main() {
   vec2 uv = gl_FragCoord.xy * uTexel;
@@ -237,7 +208,7 @@ void main() {
           vec3 r = uRings[ri];
           k += r.z * exp(-0.5 * pow((d - r.x) / r.y, 2.0));
         }
-        sum += k * texture(uState, uv + off * uTexel).r;  // REPEAT-wrapped
+        sum += k * texture(uState, uv + off * uTexel).r;
         wsum += k;
       }
     }
@@ -246,64 +217,43 @@ void main() {
   float g = 2.0 * exp(-0.5 * pow((u - uGmu) / uGsig, 2.0)) - 1.0;
   float na = clamp(a + uDt * g, 0.0, 1.0);
 
-  // Reseed with smooth, creature-scale noise so new lifeforms self-organize.
-  if (inStamp()) {
+  // Flow forcing: a slow, large-scale, drifting smooth field. Time dependence
+  // means the system never reaches a fixed point -> perpetual motion.
+  if (uFlow > 0.0) {
+    vec2 fp = gl_FragCoord.xy / uFlowScale + vec2(uTime * uFlowSpeed, uTime * uFlowSpeed * 0.73);
+    na = clamp(na + uFlow * (vnoise(fp) - 0.5), 0.0, 1.0);
+  }
+
+  // Occasional fresh growth, blended in with smooth creature-scale noise.
+  if (uSeedRadius > 0.0 && uSeedAmount > 0.0 &&
+      distance(gl_FragCoord.xy, uSeedCenter) <= uSeedRadius) {
     float soup = 0.85 * vnoise(gl_FragCoord.xy / uSeedScale + vec2(floor(uTime) * 3.7));
     na = mix(na, soup, uSeedAmount);
   }
   outColor = vec4(na, 0.0, 0.0, 1.0);
 }`;
 
-// ---- Gray-Scott ------------------------------------------------------------
-const FRAG_GS = `#version 300 es
-${COMMON}
-uniform float uDu, uDv, uF, uK, uDt;
-vec2 S(vec2 o) { return texture(uState, gl_FragCoord.xy * uTexel + o * uTexel).rg; }
-void main() {
-  vec2 c = S(vec2(0.0));
-  vec2 lap = S(vec2(-1.,-1.))*0.05 + S(vec2(0.,-1.))*0.2 + S(vec2(1.,-1.))*0.05
-           + S(vec2(-1., 0.))*0.2  + c*(-1.0)            + S(vec2(1., 0.))*0.2
-           + S(vec2(-1., 1.))*0.05 + S(vec2(0., 1.))*0.2 + S(vec2(1., 1.))*0.05;
-  float u = c.r, v = c.g, uvv = u * v * v;
-  u += (uDu * lap.r - uvv + uF * (1.0 - u)) * uDt;
-  v += (uDv * lap.g + uvv - (uF + uK) * v) * uDt;
-  u = clamp(u, 0.0, 1.0); v = clamp(v, 0.0, 1.0);
-  if (inStamp()) {
-    float n = vnoise(gl_FragCoord.xy / uSeedScale + vec2(floor(uTime) * 3.7));
-    if (n > 0.5) { u = mix(u, 0.5, uSeedAmount); v = mix(v, 0.45, uSeedAmount); }
-  }
-  outColor = vec4(u, v, 0.0, 1.0);
-}`;
-
 // ---- Colour / display: bicubic upscale + black background + bloom ----------
 const FRAG_COLOR = `#version 300 es
 precision highp float;
 uniform sampler2D uState;
-uniform vec2  uResolution;
-uniform vec2  uSimSize;       // sim grid size in texels
-uniform vec2  uSimTexel;      // 1.0 / uSimSize
-uniform vec2  uChannelMask;   // (1,0) lenia / (0,1) gray-scott
+uniform vec2  uResolution, uSimSize, uSimTexel;
 uniform float uGain, uGamma, uVignette, uBrightness, uExposure, uGlow;
 uniform vec3  uPalA, uPalB, uPalC, uPalD;
 out vec4 outColor;
 
 vec3 palette(float t) { return uPalA + uPalB * cos(6.28318530718 * (uPalC * t + uPalD)); }
+float field(vec2 uv) { return texture(uState, uv).r; }
 
-// Cheap (bilinear/nearest) field sample, used for the soft bloom.
-float field(vec2 uv) { return dot(texture(uState, uv).rg, uChannelMask); }
-
-// Exact texel fetch with wrap, for smooth bicubic upscaling.
 float fetch(ivec2 p) {
   ivec2 s = ivec2(uSimSize);
-  p = ((p % s) + s) % s;
-  return dot(texelFetch(uState, p, 0).rg, uChannelMask);
+  p = ((p % s) + s) % s;                 // wrap
+  return texelFetch(uState, p, 0).r;
 }
 vec4 catmull(float x) {
   float x2 = x * x, x3 = x2 * x;
-  return vec4(-0.5*x3 + x2 - 0.5*x,
-               1.5*x3 - 2.5*x2 + 1.0,
-              -1.5*x3 + 2.0*x2 + 0.5*x,
-               0.5*x3 - 0.5*x2);
+  return vec4(-0.5*x3 + x2 - 0.5*x, 1.5*x3 - 2.5*x2 + 1.0,
+              -1.5*x3 + 2.0*x2 + 0.5*x, 0.5*x3 - 0.5*x2);
 }
 float fieldCubic(vec2 uv) {
   vec2 coord = uv * uSimSize - 0.5;
@@ -318,17 +268,15 @@ float fieldCubic(vec2 uv) {
   }
   return r;
 }
-
 vec3 shade(float v) {
   float t = clamp(v * uGain, 0.0, 1.0);
-  return palette(t) * pow(t, uGamma);   // empty (t=0) -> black
+  return palette(t) * pow(t, uGamma);    // empty -> black
 }
 
 void main() {
   vec2 uv = gl_FragCoord.xy / uResolution;
   vec3 col = shade(clamp(fieldCubic(uv), 0.0, 1.0));
-
-  if (uGlow > 0.0) {                      // soft bloom from a blurred field
+  if (uGlow > 0.0) {
     vec2 o = uSimTexel * 1.5;
     float b = field(uv+vec2(o.x,0.)) + field(uv-vec2(o.x,0.))
             + field(uv+vec2(0.,o.y)) + field(uv-vec2(0.,o.y))
@@ -336,18 +284,14 @@ void main() {
             + field(uv+vec2(o.x,-o.y)) + field(uv+vec2(-o.x,o.y));
     col += shade(b * 0.125) * uGlow;
   }
-
   col *= uExposure * uBrightness;
   vec2 q = uv - 0.5;
   col *= 1.0 - uVignette * dot(q, q) * 2.0;
   outColor = vec4(max(col, 0.0), 1.0);
 }`;
 
-// Build both sim programs up front so switching is instant.
 const progLenia = program(VERT, FRAG_LENIA);
-const progGS    = program(VERT, FRAG_GS);
 const progColor = program(VERT, FRAG_COLOR);
-const simProg = () => state.rule === 'gray-scott' ? progGS : progLenia;
 
 const vao = gl.createVertexArray();
 gl.bindVertexArray(vao);
@@ -361,7 +305,6 @@ function makeTarget(w, h) {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, w, h, 0, gl.RG, gl.HALF_FLOAT, null);
-  // NEAREST is fine: the display pass does its own smooth bicubic upscaling.
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
@@ -393,11 +336,9 @@ function allocate() {
 }
 
 function clearAndSeed() {
-  const base = state.rule === 'gray-scott' ? [1, 0, 0, 1] : [0, 0, 0, 1];
   for (const t of [texA, texB]) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
-    gl.clearColor(base[0], base[1], base[2], base[3]);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
   }
   src = texA; dst = texB;
   pendingSeed = { cx: simW / 2, cy: simH / 2, r: Math.max(simW, simH), amount: 1.0 };
@@ -417,7 +358,6 @@ function yearFraction(d) {
   const start = new Date(d.getFullYear(), 0, 1), end = new Date(d.getFullYear() + 1, 0, 1);
   return (d - start) / (end - start);
 }
-
 function updateLook() {
   const p = palP();
   look.palA = p.a; look.palB = p.b; look.palC = p.c;
@@ -429,17 +369,13 @@ function updateLook() {
   const now = new Date();
   const tod = (now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds()) / 86400;
   const day = 0.5 - 0.5 * Math.cos(tod * 2 * Math.PI);
-  const yr = yearFraction(now);
-  const season = Math.sin(yr * 2 * Math.PI);
-
+  const yr = yearFraction(now), season = Math.sin(yr * 2 * Math.PI);
   look.brightness = sd.nightDim + (1 - sd.nightDim) * day;
-  const rawSpeed = sd.speedNight + (sd.speedDay - sd.speedNight) * day + sd.speedSeason * season;
-  dyn.speed = Math.max(0.5, Math.min(1.4, rawSpeed));
+  dyn.speed = Math.max(0.5, Math.min(1.4,
+    sd.speedNight + (sd.speedDay - sd.speedNight) * day + sd.speedSeason * season));
   dyn.gmuShift = sd.gmuSeasonSwing * season;
-
   const hue = tod * sd.hueRotatePerDay + yr * sd.hueShiftPerYear;
   look.palD = [p.d[0] + hue, p.d[1] + hue, p.d[2] + hue];
-
   let fps = CONFIG.fps;
   if (sd.batteryThrottle && battery && !battery.charging && battery.level < sd.batteryLowLevel) fps = sd.batteryFps;
   return fps;
@@ -449,48 +385,42 @@ function updateLook() {
    Render loop
    =========================================================================== */
 let pendingSeed = null, lastReseed = 0;
-
-function setSeedUniforms(p) {
-  gl.uniform1i(p._u('uState'), 0);
-  gl.uniform2f(p._u('uTexel'), 1 / simW, 1 / simH);
-  gl.uniform1f(p._u('uTime'), performance.now() / 1000);
-  gl.uniform1f(p._u('uSeedScale'), state.rule === 'lenia' ? leniaP().R : 10);
-  if (pendingSeed) {
-    gl.uniform2f(p._u('uSeedCenter'), pendingSeed.cx, pendingSeed.cy);
-    gl.uniform1f(p._u('uSeedRadius'), pendingSeed.r);
-    gl.uniform1f(p._u('uSeedAmount'), pendingSeed.amount);
-  } else {
-    gl.uniform1f(p._u('uSeedRadius'), 0); gl.uniform1f(p._u('uSeedAmount'), 0);
-  }
-}
-
 const ringBuf = new Float32Array(12);
+
 function simStep() {
-  const p = simProg();
-  gl.useProgram(p);
+  const l = leniaP();
+  gl.useProgram(progLenia);
   gl.viewport(0, 0, simW, simH);
   gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, src.tex);
-  setSeedUniforms(p);
 
-  if (state.rule === 'gray-scott') {
-    const g = gsP();
-    gl.uniform1f(p._u('uDu'), 1.0); gl.uniform1f(p._u('uDv'), 0.5);
-    gl.uniform1f(p._u('uF'), g.F);  gl.uniform1f(p._u('uK'), g.k);
-    gl.uniform1f(p._u('uDt'), 1.0 * Math.min(dyn.speed, 1.4));
+  gl.uniform1i(progLenia._u('uState'), 0);
+  gl.uniform2f(progLenia._u('uTexel'), 1 / simW, 1 / simH);
+  gl.uniform1f(progLenia._u('uTime'), performance.now() / 1000);
+
+  ringBuf.fill(0);
+  for (let i = 0; i < l.rings.length && i < 4; i++) {
+    ringBuf[i*3] = l.rings[i][0]; ringBuf[i*3+1] = l.rings[i][1]; ringBuf[i*3+2] = l.rings[i][2];
+  }
+  gl.uniform3fv(progLenia._u('uRings'), ringBuf);
+  gl.uniform1i(progLenia._u('uRingCount'), Math.min(l.rings.length, 4));
+  gl.uniform1f(progLenia._u('uR'), l.R);
+  gl.uniform1f(progLenia._u('uGmu'), l.gmu + dyn.gmuShift);
+  gl.uniform1f(progLenia._u('uGsig'), l.gsig);
+  gl.uniform1f(progLenia._u('uDt'), l.dt * dyn.speed);
+
+  gl.uniform1f(progLenia._u('uFlow'), flowAmt());
+  gl.uniform1f(progLenia._u('uFlowScale'), CONFIG.flow.scale * l.R);
+  gl.uniform1f(progLenia._u('uFlowSpeed'), CONFIG.flow.speed);
+
+  gl.uniform1f(progLenia._u('uSeedScale'), l.R);
+  if (pendingSeed) {
+    gl.uniform2f(progLenia._u('uSeedCenter'), pendingSeed.cx, pendingSeed.cy);
+    gl.uniform1f(progLenia._u('uSeedRadius'), pendingSeed.r);
+    gl.uniform1f(progLenia._u('uSeedAmount'), pendingSeed.amount);
   } else {
-    const l = leniaP();
-    ringBuf.fill(0);
-    for (let i = 0; i < l.rings.length && i < 4; i++) {
-      ringBuf[i*3] = l.rings[i][0]; ringBuf[i*3+1] = l.rings[i][1]; ringBuf[i*3+2] = l.rings[i][2];
-    }
-    gl.uniform3fv(p._u('uRings'), ringBuf);
-    gl.uniform1i(p._u('uRingCount'), Math.min(l.rings.length, 4));
-    gl.uniform1f(p._u('uR'), l.R);
-    gl.uniform1f(p._u('uGmu'), l.gmu + dyn.gmuShift);
-    gl.uniform1f(p._u('uGsig'), l.gsig);
-    gl.uniform1f(p._u('uDt'), l.dt * dyn.speed);
+    gl.uniform1f(progLenia._u('uSeedRadius'), 0); gl.uniform1f(progLenia._u('uSeedAmount'), 0);
   }
 
   gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -509,8 +439,6 @@ function display() {
   gl.uniform2f(progColor._u('uResolution'), canvas.width, canvas.height);
   gl.uniform2f(progColor._u('uSimSize'), simW, simH);
   gl.uniform2f(progColor._u('uSimTexel'), 1 / simW, 1 / simH);
-  gl.uniform2f(progColor._u('uChannelMask'), state.rule === 'gray-scott' ? 0 : 1,
-                                             state.rule === 'gray-scott' ? 1 : 0);
   gl.uniform1f(progColor._u('uGain'), lk.gain);
   gl.uniform1f(progColor._u('uGamma'), lk.gamma);
   gl.uniform1f(progColor._u('uExposure'), lk.exposure);
@@ -526,7 +454,7 @@ function display() {
 
 let running = true, lastFrame = 0;
 function frame(tMs) {
-  if (!running) return;            // chain self-stops when paused
+  if (!running) return;
   requestAnimationFrame(frame);
   const fps = updateLook();
   if (tMs - lastFrame < 1000 / fps) return;
@@ -539,8 +467,7 @@ function frame(tMs) {
       pendingSeed = { cx: Math.random()*simW, cy: Math.random()*simH,
                       r: rs.radiusFrac * Math.min(simW, simH), amount: rs.amount };
   }
-  const steps = CONFIG.stepsPerFrame[state.rule] || 1;
-  for (let i = 0; i < steps; i++) simStep();
+  for (let i = 0; i < CONFIG.stepsPerFrame; i++) simStep();
   display();
 }
 
@@ -550,10 +477,10 @@ function frame(tMs) {
 const hud = document.getElementById('hud');
 let hudTimer = null;
 function showHud(ms = 4000) {
-  const name = state.rule === 'gray-scott' ? `Gray-Scott · ${gsP().name}` : `Lenia · ${leniaP().name}`;
   const sd = CONFIG.systemData.enabled ? 'on' : 'off';
-  hud.innerHTML = `<b>${name}</b> &nbsp;·&nbsp; Palette: <b>${palP().name}</b> &nbsp;·&nbsp; date/time fx: <b>${sd}</b>`
-    + `<br><span class="keys">[G] system &nbsp; [P] preset &nbsp; [C] palette &nbsp; [S] date/time fx &nbsp; [R] reseed &nbsp; [Space] pause &nbsp; [H] hide</span>`;
+  hud.innerHTML = `<b>Lenia · ${leniaP().name}</b> &nbsp;·&nbsp; Palette: <b>${palP().name}</b>`
+    + ` &nbsp;·&nbsp; flow: <b>${flowAmt().toFixed(3)}</b> &nbsp;·&nbsp; date/time fx: <b>${sd}</b>`
+    + `<br><span class="keys">[P] preset &nbsp; [C] palette &nbsp; [ ] flow &nbsp; [S] date/time fx &nbsp; [R] reseed &nbsp; [Space] pause &nbsp; [H] hide</span>`;
   hud.style.opacity = '1';
   clearTimeout(hudTimer);
   if (ms) hudTimer = setTimeout(() => { hud.style.opacity = '0'; }, ms);
@@ -561,31 +488,29 @@ function showHud(ms = 4000) {
 
 window.addEventListener('keydown', e => {
   switch (e.key.toLowerCase()) {
-    case 'g': state.rule = state.rule === 'lenia' ? 'gray-scott' : 'lenia'; clearAndSeed(); showHud(); break;
-    case 'p':
-      if (state.rule === 'lenia') state.leniaIdx = (state.leniaIdx + 1) % LENIA_PRESETS.length;
-      else state.gsIdx = (state.gsIdx + 1) % GS_PRESETS.length;
-      clearAndSeed(); showHud(); break;
+    case 'p': state.leniaIdx = (state.leniaIdx + 1) % LENIA_PRESETS.length; clearAndSeed(); showHud(); break;
     case 'c': state.palIdx = (state.palIdx + 1) % PALETTES.length; showHud(); break;
+    case '[': state.flowMul = Math.max(0, state.flowMul * 0.8); showHud(); break;
+    case ']': state.flowMul = Math.min(8, state.flowMul * 1.25 || 0.05); showHud(); break;
     case 's': CONFIG.systemData.enabled = !CONFIG.systemData.enabled; showHud(); break;
     case 'r': clearAndSeed(); showHud(); break;
     case 'h': hud.style.opacity = hud.style.opacity === '1' ? '0' : (showHud(0), '1'); break;
     case ' ':
       e.preventDefault();
-      if (running) { running = false; }
-      else { running = true; requestAnimationFrame(frame); }
+      if (running) running = false; else { running = true; requestAnimationFrame(frame); }
       showHud(); break;
   }
 });
+
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { running = false; }
+  if (document.hidden) running = false;
   else if (!running) { running = true; requestAnimationFrame(frame); }
 });
 let resizeTimer = null;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(allocate, 200); });
 
 allocate();
-showHud(6000);          // greet with the controls
+showHud(6000);
 requestAnimationFrame(frame);
 </script>
 </body>

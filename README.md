@@ -22,17 +22,27 @@ get smooth, swimming, morphing "lifeforms." Game of Life itself is just one
 special parameter setting of this — so Lenia is the honest answer to *"what is
 the minimum number of rules for the maximally beautiful result?"*
 
-The project also ships **Gray-Scott reaction–diffusion** (two coupled equations →
-coral / Turing patterns) as a one-line alternative. Both run entirely on the GPU
-with ping-pong float textures, so they're very light.
+It all runs on the GPU with ping-pong float textures, so it's very light.
+
+## Keeping it alive: the "flow" forcing
+
+Lenia has one quirk worth knowing: seeded from noise it tends to **crystallize**
+into a static Turing pattern (worms and spots that stop moving). To keep it
+alive forever, each step we add a gentle, slowly-drifting, large-scale
+smooth-noise field — the **flow** forcing. Because that nudge is *time-varying*,
+the system can never reach a fixed point, so it keeps writhing and reorganizing.
+
+- `CONFIG.flow.amount` (and each preset's `flow`) sets the strength.
+- `0` = pure Lenia (will eventually freeze); higher = livelier, more turbulent.
+- Adjust it live with the <kbd>[</kbd> and <kbd>]</kbd> keys.
 
 ## What makes it bright, fluid and high-fidelity
 
 - Runs the simulation at a fraction of screen resolution and upscales with
-  linear filtering — fluid motion, low cost.
-- A cheap **bloom/glow** pass gives bright regions a luminous, high-fidelity feel.
-- **Endless by design:** it periodically drops fresh "soup," so the world never
-  dies and never freezes.
+  **bicubic** filtering — smooth even on GPUs without float linear filtering.
+- A cheap **bloom/glow** pass gives bright regions a luminous feel.
+- **Endless by design:** the flow forcing (plus occasional fresh growth) means
+  the world never dies and never freezes.
 
 ## Colour, speed & character follow the clock and calendar (offline)
 
@@ -76,12 +86,10 @@ browser's full-screen shortcut.
 
 Open `index.html` and edit the `CONFIG` object at the top. Highlights:
 
-- `rule: 'lenia'` → switch to `'gray-scott'` for coral/Turing patterns.
 - `simScale`, `maxSimDim`, `maxDPR`, `fps` → performance vs. fidelity.
-- `lenia: { R, dt, kmu, ksig, gmu, gsig }` → the creatures' size, speed and
-  behaviour. `gmu`/`gsig` are the heart of it; small changes matter.
-- `grayScott: { F, k, ... }` → try `(0.0367, 0.0649)` for mitosis, or
-  `(0.014, 0.054)` for waves.
+- `flow: { amount, scale, speed }` → the liveliness / never-freeze forcing.
+- `LENIA_PRESETS` → each has `R, dt, gmu, gsig, rings, flow`. `gmu`/`gsig` are
+  the heart of the behaviour; small changes matter a lot.
 - `look: { gain, gamma, exposure, glow, vignette }` → brightness and bloom.
 - `systemData` → how the clock/calendar/battery drive colour, speed, etc.
   Set `enabled: false` for a constant look.
@@ -90,28 +98,27 @@ Open `index.html` and edit the `CONFIG` object at the top. Highlights:
 
 A hint bar appears on screen on load and whenever you press a key.
 
-- <kbd>G</kbd> — switch system (Lenia ⇄ Gray-Scott)
-- <kbd>P</kbd> — cycle presets for the current system
+- <kbd>P</kbd> — cycle Lenia presets
 - <kbd>C</kbd> — cycle colour palettes
+- <kbd>[</kbd> / <kbd>]</kbd> — less / more flow (liveliness)
 - <kbd>S</kbd> — toggle the date/time effects (off by default)
-- <kbd>R</kbd> — reseed everything
+- <kbd>R</kbd> — reseed
 - <kbd>Space</kbd> — pause / resume
 - <kbd>H</kbd> — show / hide the hint bar
 
-Found a combination you like? Set it as the startup default via `CONFIG.rule`,
-`CONFIG.leniaPreset` / `CONFIG.gsPreset`, and `CONFIG.palette`.
+Found a combination you like? Set it as the startup default via
+`CONFIG.leniaPreset` and `CONFIG.palette` (and tune `CONFIG.flow.amount`).
 
 ## Notes
 
 - Requires a browser with **WebGL2** and float render targets (any recent
   Safari, Chrome, or Firefox on a modern Mac). A message is shown if unavailable.
-- The visual was tuned by hand; if Lenia ever looks too sparse or too busy on
-  your machine, nudge `lenia.gmu` by ±0.005 or switch `rule` to `'gray-scott'`.
+- If it ever looks too static, press <kbd>]</kbd> to raise the flow; too noisy,
+  press <kbd>[</kbd>. If it's too sparse/busy, nudge a preset's `gmu` by ±0.005.
 
 ## Credits / further reading
 
 - Lenia — Bert Wang-Chak Chan: <https://chakazul.github.io/lenia.html> ·
   <https://en.wikipedia.org/wiki/Lenia>
 - Conway's Game of Life: <https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life>
-- Gray-Scott reaction–diffusion: <https://www.karlsims.com/rd.html>
 - Cosine palettes — Inigo Quilez: <https://iquilezles.org/articles/palettes/>
