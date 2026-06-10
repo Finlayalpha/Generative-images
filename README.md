@@ -1,50 +1,50 @@
-# SmoothLife — a living wallpaper
+# Particle Lenia — a living wallpaper
 
-A hands-off, **endlessly churning** generative wallpaper built on **SmoothLife**,
-Stephan Rafler's continuous generalization of Conway's Game of Life. One
-self-contained file (`index.html`), **no dependencies, fully offline**, **no
-controls or settings** — it just runs. Built to be a MacBook screensaver / live
-wallpaper.
+A hands-off, **perpetually moving** generative wallpaper built on **Particle
+Lenia** (Mordvintsev et al., Google Research) — a particle-based descendant of
+Conway's Game of Life. One self-contained file (`index.html`), **no
+dependencies, fully offline**, **no controls or settings** — it just runs.
+Built to be a MacBook screensaver / live wallpaper.
 
-## What it does
+## Why particles (and not a grid)
 
-It runs a continuous cellular automaton from random soup. Complex dynamics
-emerge on their own — the field churns perpetually and **gliders are born,
-swim, and dissolve** without being seeded or choreographed. A slow, tasteful
-colour drift plays over the top.
+Grid-based Lenia / SmoothLife settle into static spatial patterns — spots,
+labyrinths — because every cell relaxes to a steady value and the lattice
+locks into a fixed point. **Particle Lenia removes the grid entirely.** It
+simulates a fixed set of particles whose motion is a *gradient flow* on an
+energy field, so the particles are intrinsically moving and self-organize into
+living "cells" that drift, rotate, merge and split. A static lattice simply
+isn't a state the system can occupy, so it never freezes.
 
-- **Genuinely emergent** — unlike most Lenia regimes (which settle into static
-  Turing patterns), this SmoothLife parameter set never settles. Lifeforms arise
-  from the dynamics themselves.
-- **Never dies** — runs on a torus (wrap-around), and a gentle "rain" of fresh
-  soup keeps new activity appearing forever.
-- **Tasteful colour** — a single accent colour (black → accent → white-hot cores)
-  that slowly rotates hue over minutes. No garish per-pixel rainbow.
-- **Light** — a small simulation grid upscaled with smooth bicubic filtering;
-  pauses when the tab/window is hidden.
+For each particle *i*:
 
-## Why SmoothLife (and not seeded Lenia)?
+```
+U_i  = Σ_j K(|p_i − p_j|)                 Lenia field (ring kernel K)
+E(x) = R(x) − G(U(x))                      energy = repulsion − growth
+  K(r) = w_k · exp(−((r−μ_k)/σ_k)²)
+  G(u) = exp(−((u−μ_g)/σ_g)²)
+  R(x) = (c_rep/2) · Σ_j max(1 − |x−p_j|, 0)²
+dp_i/dt = −∇E(p_i)                         move down the energy gradient
+```
 
-Lenia's famous gliders rarely *emerge* — random soup almost always relaxes into
-a static Turing pattern, so the iconic creatures usually have to be seeded as
-specific patterns (which looks choreographed). **SmoothLife**, its sibling, has
-parameter regimes that churn perpetually and spit out gliders on their own —
-which is what an "alive forever" screensaver actually wants.
+Defaults are Google Research's: `μ_k=4, σ_k=1, w_k=0.022, μ_g=0.6, σ_g=0.15,
+c_rep=1, dt=0.1`. A whisper of thermal noise guarantees it never settles.
 
-How it works each step: for every cell it measures two smooth neighbourhood
-averages — the fill of an inner disk (radius `ri`, "am I alive?") and of an
-outer ring (`ri..ra`, "how crowded am I?") — then a smooth birth/survival rule
-`s(n,m)` nudges the cell up or down via `f += dt·(2·s − 1)`.
+## Look
 
-The parameters are the verified glider-producing transition set (Rafler /
-tsoding): `b1=0.257, b2=0.336, d1=0.365, d2=0.549, αn=0.028, αm=0.147`.
+- **Static heatmap** — denser mass reads "hotter": black → indigo → crimson →
+  orange → yellow → white (inferno-style ramp), as in the Particle Lenia demos.
+- Particles are drawn as additive glow splats into a float buffer, then the heat
+  ramp is applied — giving smooth, organic, luminous "cells".
+- Pauses when the tab/window is hidden.
 
-**Room matters most.** If the grid is only a few glider-widths across, the whole
-field locks into one global standing pattern (the labyrinth) instead of hosting
-separate gliders. So we keep the radius modest (`ra=12`) and the grid large
-(`simLongAxis=480` → ~40 glider-widths) — and a regular "rain" of fresh soup
-keeps it churning. On a narrow window (e.g. a phone in portrait) there's less
-room, so it's happiest full-screen on a wide display.
+## How it's built
+
+- **Simulation** runs on the CPU with a spatial hash for O(N) neighbour queries
+  (the kernel is short-range), on a torus so structures wrap around forever.
+  Verified headless: stable (no blow-up), `meanU → μ_g`, and motion never stops.
+- **Rendering** is WebGL2: additive point-sprite glow → `R16F` accumulation →
+  heatmap colour pass.
 
 ## Run it on macOS
 
@@ -52,43 +52,34 @@ The file is offline-first: once it's on disk it never touches the network.
 
 ### As a screensaver — [WebViewScreenSaver](https://github.com/liquidx/webviewscreensaver) (free, open source)
 
-1. Download and install WebViewScreenSaver from its releases page.
-2. System Settings → **Screen Saver** → choose **WebViewScreenSaver** → *Options*.
+1. Install WebViewScreenSaver from its releases page.
+2. System Settings → **Screen Saver** → **WebViewScreenSaver** → *Options*.
 3. Add a URL pointing at this file on disk, e.g.
-   `file:///Users/yourname/Generative-images/index.html`
-   (run `pwd` in this folder and append `/index.html`).
+   `file:///Users/yourname/Generative-images/index.html` (run `pwd` here and
+   append `/index.html`).
 
 ### As a live desktop wallpaper — [Plash](https://github.com/sindresorhus/Plash) (free)
 
-1. Install Plash (Mac App Store or GitHub).
-2. Plash menu → **Open URL…** → enter the same `file://…/index.html` path.
+1. Install Plash.  2. **Open URL…** → the same `file://…/index.html` path.
 3. Set *Bring browsing level to back* so it sits behind your icons.
 
 ### Just to preview
 
-Double-click `index.html` to open it in Safari/Chrome/Firefox, then use your
-browser's full-screen shortcut.
+Double-click `index.html` and use your browser's full-screen shortcut.
 
-## Tuning (optional — edit the `CONFIG` block at the top of `index.html`)
+## Tuning (edit the `CONFIG` block at the top of `index.html`)
 
-- `simLongAxis` — sim resolution on the long side. **Smaller = bigger features
-  and lighter on the GPU.** (The kernel cost grows with `ra²`, so if it's heavy,
-  lower this before touching `ra`.)
-- `ri` / `ra` — neighbourhood radii (keep `ra ≈ 3·ri`). Bigger = larger lifeforms,
-  but too small and gliders dissolve.
-- `dt` — timestep. Too large collapses to a static state; too small barely moves.
-- `rainSec` / `rainCount` — how often / how much fresh soup is stirred in.
-- `look.hueSpeed` — colour drift rate (1/240 ≈ a full cycle every 4 min).
-
-## Notes
-
-- Requires **WebGL2** + float textures (any recent Safari/Chrome/Firefox on a
-  modern Mac). A message is shown if unavailable.
+- `nParticles` — more = denser, more cells (also heavier on the CPU).
+- `worldHeight` — world size in Lenia units; smaller = larger cells on screen.
+- `substeps` — sim steps per frame; more = livelier motion (heavier).
+- `noise` — thermal jitter; keeps it churning, prevents any freeze.
+- `look.pointSize` — glow radius (fraction of screen height).
+- `look.gain` / `gamma` — maps mass density onto the heat ramp (brightness/contrast).
+- `mu_k, sigma_k, w_k, mu_g, sigma_g, c_rep, dt` — the Particle Lenia rule itself.
 
 ## Credits / further reading
 
-- SmoothLife — Stephan Rafler: <https://arxiv.org/pdf/1111.1567>
-- Reference shader (parameters): <https://github.com/tsoding/SmoothLife>
-- Lenia (sibling system) — Bert Chan: <https://chakazul.github.io/lenia.html>
-- On glider sensitivity to resolution/step size: <https://arxiv.org/pdf/2401.13111>
+- Particle Lenia — Mordvintsev et al., Google Research:
+  <https://google-research.github.io/self-organising-systems/particle-lenia/>
+- Lenia — Bert Chan: <https://chakazul.github.io/lenia.html>
 - Conway's Game of Life: <https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life>
