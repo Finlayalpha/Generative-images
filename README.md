@@ -1,34 +1,43 @@
-# Lenia — a living wallpaper
+# SmoothLife — a living wallpaper
 
-A hands-off, endlessly running generative wallpaper built on **Lenia**, the
-continuous generalization of Conway's Game of Life. One self-contained file
-(`index.html`), **no dependencies, fully offline**, **no controls or settings** —
-it just runs. Built to be a MacBook screensaver / live wallpaper.
+A hands-off, **endlessly churning** generative wallpaper built on **SmoothLife**,
+Stephan Rafler's continuous generalization of Conway's Game of Life. One
+self-contained file (`index.html`), **no dependencies, fully offline**, **no
+controls or settings** — it just runs. Built to be a MacBook screensaver / live
+wallpaper.
 
 ## What it does
 
-It seeds a school of real Lenia **lifeforms**, lets them swim and wrap around
-the screen, then slowly cycles through a zoo of different creatures forever,
-while the colour drifts gently through the spectrum.
+It runs a continuous cellular automaton from random soup. Complex dynamics
+emerge on their own — the field churns perpetually and **gliders are born,
+swim, and dissolve** without being seeded or choreographed. A slow, tasteful
+colour drift plays over the top.
 
-- **Real creatures, seeded** — Orbium, Scutium, Discutium, Parorbium (from Bert
-  Chan's collection), embedded as run-length-encoded patterns and decoded at load.
-- **A school that glides** — copies are stamped with a shared orientation so they
-  travel together on a torus (wrap-around), rather than colliding into mush.
-- **Slow cycling** — every ~30s it fades to black, switches creature, and reseeds.
+- **Genuinely emergent** — unlike most Lenia regimes (which settle into static
+  Turing patterns), this SmoothLife parameter set never settles. Lifeforms arise
+  from the dynamics themselves.
+- **Never dies** — runs on a torus (wrap-around), and a gentle "rain" of fresh
+  soup keeps new activity appearing forever.
 - **Tasteful colour** — a single accent colour (black → accent → white-hot cores)
   that slowly rotates hue over minutes. No garish per-pixel rainbow.
-- **Light** — runs a small simulation grid and upscales with smooth bicubic
-  filtering, so it stays easy on the GPU. Pauses when the tab/window is hidden.
+- **Light** — a small simulation grid upscaled with smooth bicubic filtering;
+  pauses when the tab/window is hidden.
 
-## Why the creatures are seeded (not "emergent")
+## Why SmoothLife (and not seeded Lenia)?
 
-Lenia's gliders look emergent in videos, but they aren't reliably so: random
-"soup" almost always relaxes into a **static Turing pattern**. The famous
-lifeforms occupy a tiny corner of parameter space and are found by deliberate
-search/evolution, then **seeded** as specific patterns. So this wallpaper embeds
-the real patterns and plays them, which is how those videos are actually made.
-(See the notes/links at the bottom.)
+Lenia's famous gliders rarely *emerge* — random soup almost always relaxes into
+a static Turing pattern, so the iconic creatures usually have to be seeded as
+specific patterns (which looks choreographed). **SmoothLife**, its sibling, has
+parameter regimes that churn perpetually and spit out gliders on their own —
+which is what an "alive forever" screensaver actually wants.
+
+How it works each step: for every cell it measures two smooth neighbourhood
+averages — the fill of an inner disk (radius `ri`, "am I alive?") and of an
+outer ring (`ri..ra`, "how crowded am I?") — then a smooth birth/survival rule
+`s(n,m)` nudges the cell up or down via `f += dt·(2·s − 1)`.
+
+The parameters are the verified glider-producing set (Rafler / tsoding):
+`ri=7, ra=21, b1=0.257, b2=0.336, d1=0.365, d2=0.549, αn=0.028, αm=0.147, dt=0.05`.
 
 ## Run it on macOS
 
@@ -55,27 +64,24 @@ browser's full-screen shortcut.
 
 ## Tuning (optional — edit the `CONFIG` block at the top of `index.html`)
 
-- `simLongAxis` — sim resolution on the long side. **Smaller = bigger creatures
-  and lighter on the GPU**; larger = more, smaller creatures.
-- `cycleSec` — seconds each creature is shown before switching.
-- `seedCount` — how many creatures make up the school.
-- `look.hueSpeed` — how fast the colour drifts (1/240 ≈ a full cycle every 4 min).
-- `look.gain` / `gamma` / `glow` / `vignette` — brightness, glow and framing.
-
-To add more creatures, append `{ name, m, s, cells }` entries to `CREATURES`
-(single-kernel `R=13` creatures from Chan's collection drop straight in).
+- `simLongAxis` — sim resolution on the long side. **Smaller = bigger features
+  and lighter on the GPU.** (The kernel cost grows with `ra²`, so if it's heavy,
+  lower this before touching `ra`.)
+- `ri` / `ra` — neighbourhood radii (keep `ra ≈ 3·ri`). Bigger = larger lifeforms,
+  but too small and gliders dissolve.
+- `dt` — timestep. Too large collapses to a static state; too small barely moves.
+- `rainSec` / `rainCount` — how often / how much fresh soup is stirred in.
+- `look.hueSpeed` — colour drift rate (1/240 ≈ a full cycle every 4 min).
 
 ## Notes
 
 - Requires **WebGL2** + float textures (any recent Safari/Chrome/Firefox on a
   modern Mac). A message is shown if unavailable.
-- Creature patterns are decoded from Chan's RLE "cells" format; values are 0–255
-  mapped to 0–1.
 
 ## Credits / further reading
 
-- Lenia — Bert Wang-Chak Chan: <https://chakazul.github.io/lenia.html> ·
-  creature data: <https://github.com/Chakazul/Lenia>
-- "Soup settles into Turing patterns; creatures are rare and seeded":
-  <https://arxiv.org/pdf/2510.00794> · Lenia paper: <https://arxiv.org/pdf/1812.05433>
+- SmoothLife — Stephan Rafler: <https://arxiv.org/pdf/1111.1567>
+- Reference shader (parameters): <https://github.com/tsoding/SmoothLife>
+- Lenia (sibling system) — Bert Chan: <https://chakazul.github.io/lenia.html>
+- On glider sensitivity to resolution/step size: <https://arxiv.org/pdf/2401.13111>
 - Conway's Game of Life: <https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life>

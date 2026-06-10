@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Lenia — Living Wallpaper</title>
+<title>SmoothLife — Living Wallpaper</title>
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
@@ -21,76 +21,49 @@
 <script>
 "use strict";
 /* ===========================================================================
-   Lenia — a hands-off living wallpaper.
+   SmoothLife — a hands-off, endlessly churning living wallpaper.
 
-   Lenia is the continuous generalization of Conway's Game of Life. Its famous
-   gliding "lifeforms" do NOT reliably emerge from random soup (soup settles
-   into static Turing patterns); they're specific patterns discovered by search
-   and then seeded. So we embed REAL creatures (from Bert Chan's collection) and
-   let them swim, then slowly cycle through the zoo forever.
+   SmoothLife (Stephan Rafler, 2011) is a continuous generalization of Conway's
+   Game of Life. Unlike most Lenia regimes (which settle into static Turing
+   patterns), SmoothLife in this parameter set CHURNS PERPETUALLY and emits
+   gliders that emerge on their own from random soup — exactly the "alive,
+   never-settling" behaviour we want, with no seeding or choreography.
 
-   No controls, no settings, no UI. It just runs:
-     - seeds a school of one creature, aligned so they glide together on a torus
-     - lets them swim (and wrap around) for a while
-     - gently fades to black, switches to the next creature, repeats
-     - colour drifts slowly and tastefully through the spectrum
+   Each step, for every cell, it measures two smooth neighbourhood averages:
+     m = fill of the INNER disk (radius ri)   -> "am I alive?"
+     n = fill of the OUTER ring (ri..ra)       -> "how crowded is my neighbourhood?"
+   A smooth birth/survival transition s(n,m) then nudges the cell up or down.
 
-   All creatures here are single-kernel (b=1, R=13, T=10), differing only in the
-   growth mean m / width s and their seed pattern.
+   A gentle "rain" of fresh random soup keeps new activity appearing forever.
+   Colour drifts slowly and tastefully. No controls, no UI — it just runs.
    =========================================================================== */
 
 const CONFIG = {
-  simLongAxis: 360,   // sim grid on its long side (small = bigger creatures + lighter)
+  simLongAxis: 300,    // sim grid long side (smaller = bigger features + lighter)
   maxDPR: 1.5,
   fps: 30,
-  R: 13,              // creature native kernel radius
-  dt: 0.1,            // 1 / T
-  cycleSec: 32,       // seconds per creature before switching
-  fadeSec: 1.6,       // fade-to-black duration around each switch
-  seedCount: 9,       // creatures stamped per cycle
-  topUpSec: 6,        // occasionally add one more so the school stays populated
-  alignJitter: 0.5,   // radians of orientation spread within the school
-  look: { gain: 1.3, gamma: 0.8, glow: 0.45, vignette: 0.12, hueSpeed: 1 / 240 },
+
+  // SmoothLife neighbourhood radii (in sim pixels). ra ~ 3*ri. Larger = bigger
+  // life, and gliders need a well-resolved radius (they dissolve when too small).
+  ri: 7.0,
+  ra: 21.0,
+  dt: 0.05,            // smooth-time step (too large collapses to a static state)
+
+  // Verified glider-producing transition parameters (Rafler / tsoding).
+  b1: 0.257, b2: 0.336,   // birth interval
+  d1: 0.365, d2: 0.549,   // survival interval
+  alphaN: 0.028,          // sharpness of the neighbourhood threshold
+  alphaM: 0.147,          // sharpness of the "aliveness" blend
+
+  // Rain: occasionally stir in fresh soup so new gliders keep being born.
+  rainSec: 9,
+  rainCount: 2,
+  rainRadiusFrac: 0.10,   // patch radius as a fraction of the smaller sim axis
+  rainAmount: 0.9,
+  seedBlock: 7.0,         // soup block size (~ri) so the field has density variation
+
+  look: { gain: 1.15, gamma: 0.9, glow: 0.45, vignette: 0.12, hueSpeed: 1 / 240 },
 };
-
-// Real Lenia creatures (Chan's collection). cells = run-length-encoded pattern.
-const CREATURES = [
-  { name: 'Orbium unicaudatus', m: 0.15,  s: 0.015,
-    cells: "7.MD6.qL$6.pKqEqFURpApBRAqQ$5.VqTrSsBrOpXpWpTpWpUpCrQ$4.CQrQsTsWsApITNPpGqGvL$3.IpIpWrOsGsBqXpJ4.LsFrL$A.DpKpSpJpDqOqUqSqE5.ExD$qL.pBpTT2.qCrGrVrWqM5.sTpP$.pGpWpD3.qUsMtItQtJ6.tL$.uFqGH3.pXtOuR2vFsK5.sM$.tUqL4.GuNwAwVxBwNpC4.qXpA$2.uH5.vBxGyEyMyHtW4.qIpL$2.wV5.tIyG3yOxQqW2.FqHpJ$2.tUS4.rM2yOyJyOyHtVpPMpFqNV$2.HsR4.pUxAyOxLxDxEuVrMqBqGqKJ$3.sLpE3.pEuNxHwRwGvUuLsHrCqTpR$3.TrMS2.pFsLvDvPvEuPtNsGrGqIP$4.pRqRpNpFpTrNtGtVtStGsMrNqNpF$5.pMqKqLqRrIsCsLsIrTrFqJpHE$6.RpSqJqPqVqWqRqKpRXE$8.OpBpIpJpFTK!" },
-  { name: 'Scutium solidus', m: 0.29, s: 0.045,
-    cells: "5.pGQ$6.sUsDqRR$4.VpXrJwKvNtXrW$2.ApVrGrWsIwKyOyDwTuNO$2.qArOrIqIpPpTxH2yOyIvKqG$rVpIrNrJpH4.xP3yOvFqWA$sKvNsKqE5.pI4yOuHqPC$sNxBuMpD5.JuN3yOwXsUpN$sGxFyOT5.pCtIyF3yOuKqUH$rPwXyOxT5.qKtSxS3yOvIrQT$pQwK2yOtWXJXqHsGuWxW3yOvPsApC$.vQ3yOuVsLsGsXuMwOyK3yOvHrVpC$.rKyK3yOxEwBwCwXyE3yOxQuMrJU$.WvC5yOyM5yOwFtJqOL$2.rVwO9yOwWuMsApOC$2.pLtBwK6yOyJwQuTsQqLP$3.qHsWvEwUxTyCxRwWvRuGsNqSpA$3.HqBrUtHuGuPuLtVsXrSqIXB$4.DpDqEqW2rIqWqGpJN$6.ENTUPHA!" },
-  { name: 'Discutium solidus', m: 0.356, s: 0.063,
-    cells: "8.AEG2JHFB$6.HUpKpWqGqKqLqHpXpOpCOE$4.FpCqGrGsCsQtBtEtDsUsMrXrIqNpRVF$3.MqArPtDuHvDvPvUvVvSvMvAuMtTsWrWqUpRQA$2.MqMsSuSwIxKyDyKyMyKyFxUxKwUwCvGuGtCrTqKpBD$.DqKtHvWyC10yOyHxLwLvHtXsMqUpHE$.pMsWwG14yOyMxJwBuOsVrBpHD$.rLvM6yOyLyDyByGyL6yOyAwOuVsXqVX$VtMxS5yOyGwR2vXwJxCxTyI5yOyLwTuUsOqHM$qGvDyM5yOvWtRtDtHtWuTvSwRxNyEyN4yOwRuJrUpKB$rKwFxXyK3yOxRsJqNqIqSrMsJtIuIvHwIxJyH3yOyMwDtJqOL$sCwLwWxU3yOuRT2.GpBqAqXrXsXuBvIwWwYH3yOxTuVrSpB$sHuSvLxAyK2yOrO6.OpOqPrTtFvDxJ4yOwGsUpRA$rXsStVvVxW2yOpO8.IpOrEtJwM4yOxLtSqGC$qBqQsFuPxByLxWqWV9.pFrWwD4yOyJuIqOD$.NqOtGvTxPuLsDqUpKJ8.rDxD5yOuOqOB$2.WrRuFwDrP2rTrHqLpJL6.sK6yOuIqE$3.qBsIrPpKqAqOrBrIrFqOpTXJCBKxI5yOxXtMpI$3.HqJ3.HpBpVqQrGrKrEqQqHqGuE4yOyMyNwNsBB$11.NpNqLrFrTsDsO2yOyNyE2xSyCuLqA$13.GpLqNrPuKyDxUxDwJwCwLvUrV$15.NpTwDwCvMuPtXuCvAsVS$16.GtNtIsPrTrLsDsTpL$16.pEqSqIpNVpBqFpH$16.A5.G!" },
-  { name: 'Parorbium dividuus', m: 0.174, s: 0.022,
-    cells: "37.G$37.pN$29.KXO5.WK$28.GpV2qP2pApBSG.tC$28.pLrGsGsKrOqB2qCqApLuX$21.F4.RpHqIsBtAsVrSpLpEpHpSqLuNsI$21.pW2.MpJpTpWpSrDrUrRqRA2.BUrLxM$16.A4.pJOPpSpWpKTJpIqLqSqMpR4.MyBpA$16.qW5.sXpTqFXB2.pCqPrOrTrK5.tOuL$6.LpAR7.rL5.vIqTpN4.VrSsXtNtJqS4.pOvO$5.BpPqKqIpORpFpL2pOpHqGsG4.vKrTO4.ItAuJvBvCuIE3.GuEX$5.AqSrWsFrOqBpXpSpRpTqHqKvV4.tHvL6.uEvSwOwVwJrR3.JsRqD$4.UpMrWtBsXrVpXQHCGTqJwSqN3.qFxL6.uMwXyAyHyEvHpO2.pBrWqF$qV2.pEpXqDrKsArUqRpA5.GtGwD4.xJ6.uCyC3yOyBsOpFQpWrPpV$rU.XqCpSVKqHqSqOpX6.HyAL3.vGqX5.tJ4yOyNuRrFqEqTrKpH$qJrWqBpTN2.qGrJrTrQqM6.uVsS3.sCtB4.DsTyDyOyIyFxPvEsL2rJqWN$.vQqPS3.rHsQtItKsU6.rDuE3.pJsRqHA2.pBsJwHxQxIwUwIuSsWrXrIqBB$.xIqL4.rTuAuWvEuVrL5.pNtJV2.AqQrLpWXpBqCsCuM2vUvNuUtTsQrSqPX$.pAwE4.qLxM4yOvRqNIAWqJqPM6.LpFpVqNqXrGrIrDqRqEpIK$.qSPpVpF9.qWsLtLuAuDtUtDrN12.pFpMpOpMpFPD$2.vCqE3.qJwT4yOxEsXqHpRqDqRpRA8.EPpFpMpOpMpFPD$2.sBsKM2.qKvO2yOyCxVwSuArUrAqUqIQ12.BEC$2.VsOqSpCpBqSuEwXxJwWwOvOtVsIrMqQpI$3.qJrQqUqJrFtBuXvRvQvFuKtEsCrDpRH$3.HqLrJrIrOsMtM2uCtQtAsErGqCO$4.KqBrArKrUsFsLsMsFrQqXqBT$5.FpHqFqQrBrErCqSqJpPQ$7.KpApLpPpOpJUJ$10.2D!" },
-];
-
-/* ===========================================================================
-   RLE decoder for Chan's creature "cells" strings
-   =========================================================================== */
-function decodeCells(str) {
-  const rows = []; let row = [], num = '', i = 0;
-  const flush = (v, n) => { for (let k = 0; k < n; k++) row.push(v / 255); };
-  while (i < str.length) {
-    const c = str[i];
-    if (c >= '0' && c <= '9') { num += c; i++; continue; }
-    if (c === '!') break;
-    if (c === '$') { const n = num ? +num : 1; num = ''; rows.push(row); for (let k = 1; k < n; k++) rows.push([]); row = []; i++; continue; }
-    let v;
-    if (c === '.' || c === 'b') { v = 0; i++; }
-    else if (c === 'o') { v = 255; i++; }
-    else if (c >= 'p' && c <= 'y') { v = (c.charCodeAt(0) - 112) * 24 + (str.charCodeAt(i + 1) - 65) + 25; i += 2; }
-    else { v = c.charCodeAt(0) - 64; i++; }                       // 'A'..'X' -> 1..24
-    v = Math.max(0, Math.min(255, v));
-    const n = num ? +num : 1; num = '';
-    flush(v, n);
-  }
-  if (row.length) rows.push(row);
-  const w = rows.reduce((m, r) => Math.max(m, r.length), 1), h = rows.length;
-  const data = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < rows[y].length; x++) data[y * w + x] = rows[y][x];
-  return { w, h, data };
-}
 
 /* ===========================================================================
    WebGL plumbing
@@ -105,7 +78,6 @@ if (!gl.getExtension('EXT_color_buffer_float')) {
   f.textContent = "This GPU/browser can't render to float textures. Try a recent Safari/Chrome/Firefox.";
   throw new Error('EXT_color_buffer_float unavailable');
 }
-const floatLinear = !!gl.getExtension('OES_texture_float_linear');
 
 function compile(type, src) {
   const s = gl.createShader(type);
@@ -126,45 +98,62 @@ function program(vsrc, fsrc) {
 const VERT = `#version 300 es
 void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0,0.,1.); }`;
 
-// Lenia update with the exponential "bump" kernel exp(4 - 1/(r(1-r))).
-const FRAG_LENIA = `#version 300 es
+// SmoothLife update.
+const FRAG_SIM = `#version 300 es
 precision highp float;
 uniform sampler2D uState;
 uniform vec2 uTexel;
-uniform float uR, uM, uS, uDt;
+uniform float uRi, uRa, uDt;
+uniform float uB1, uB2, uD1, uD2, uAlphaN, uAlphaM;
 out vec4 outColor;
-float kcore(float r){ return (r<=0.0 || r>=1.0) ? 0.0 : exp(4.0 - 1.0/(r*(1.0-r))); }
+
+float sig1(float x, float a, float al){ return 1.0 / (1.0 + exp(-(x - a) * 4.0 / al)); }
+float sig2(float x, float a, float b){ return sig1(x, a, uAlphaN) * (1.0 - sig1(x, b, uAlphaN)); }
+float sigm(float x, float y, float m){ float k = sig1(m, 0.5, uAlphaM); return x * (1.0 - k) + y * k; }
+float trans(float n, float m){ return sig2(n, sigm(uB1, uD1, m), sigm(uB2, uD2, m)); }
+
 void main(){
   vec2 uv = gl_FragCoord.xy * uTexel;
-  float a = texture(uState, uv).r;
-  float sum = 0.0, wsum = 0.0;
-  int iR = int(ceil(uR));
+  float f = texture(uState, uv).r;
+
+  float inSum = 0.0, inW = 0.0, outSum = 0.0, outW = 0.0;
+  int iR = int(ceil(uRa));
   for (int dy=-iR; dy<=iR; dy++) for (int dx=-iR; dx<=iR; dx++){
     vec2 off = vec2(float(dx), float(dy));
-    float r = length(off) / uR;
-    if (r < 1.0){ float k = kcore(r); sum += k * texture(uState, uv + off*uTexel).r; wsum += k; }
+    float d = length(off);
+    if (d <= uRa + 1.0){
+      float s = texture(uState, uv + off * uTexel).r;          // REPEAT-wrapped
+      float wi = 1.0 - smoothstep(uRi - 1.0, uRi + 1.0, d);     // inner disk
+      float wo = smoothstep(uRi - 1.0, uRi + 1.0, d) - smoothstep(uRa - 1.0, uRa + 1.0, d); // outer ring
+      inSum += wi * s; inW += wi;
+      outSum += wo * s; outW += wo;
+    }
   }
-  float u = sum / max(wsum, 1e-9);
-  float g = 2.0 * exp(-0.5 * pow((u - uM) / uS, 2.0)) - 1.0;
-  outColor = vec4(clamp(a + uDt * g, 0.0, 1.0), 0.0, 0.0, 1.0);
+  float m = inSum / max(inW, 1e-9);
+  float n = outSum / max(outW, 1e-9);
+
+  float nf = clamp(f + uDt * (2.0 * trans(n, m) - 1.0), 0.0, 1.0);
+  outColor = vec4(nf, 0.0, 0.0, 1.0);
 }`;
 
-// Stamp a creature into the field at a position / rotation / flip (max-composite).
-const FRAG_STAMP = `#version 300 es
+// Rain / seed: write random soup inside a disk (radius huge => full-field seed).
+const FRAG_RAIN = `#version 300 es
 precision highp float;
-uniform sampler2D uState, uCre;
-uniform vec2 uTexel, uCreSize, uCenter;
-uniform float uCos, uSin, uFlip;
+uniform sampler2D uState;
+uniform vec2 uTexel, uCenter;
+uniform float uRadius, uAmount, uSeed, uBlock;
 out vec4 outColor;
+float hash(vec2 p){ p = fract(p * vec2(123.34, 345.45)); p += dot(p, p + 34.345); return fract(p.x * p.y); }
 void main(){
-  float base = texture(uState, gl_FragCoord.xy * uTexel).r;
-  vec2 P = gl_FragCoord.xy - uCenter;
-  vec2 L = vec2(P.x*uCos + P.y*uSin, -P.x*uSin + P.y*uCos);
-  L.x *= uFlip;
-  vec2 cuv = L / uCreSize + 0.5;
-  float v = 0.0;
-  if (cuv.x>=0.0 && cuv.x<=1.0 && cuv.y>=0.0 && cuv.y<=1.0) v = texture(uCre, cuv).r;
-  outColor = vec4(max(base, v), 0.0, 0.0, 1.0);
+  float f = texture(uState, gl_FragCoord.xy * uTexel).r;
+  if (distance(gl_FragCoord.xy, uCenter) <= uRadius){
+    // Blocky soup: random values in cells ~ri across, so the large-radius
+    // neighbourhood averages actually vary and dynamics can take hold.
+    vec2 cell = floor(gl_FragCoord.xy / uBlock);
+    float r = hash(cell + uSeed);
+    f = mix(f, r, uAmount);
+  }
+  outColor = vec4(f, 0.0, 0.0, 1.0);
 }`;
 
 // Display: bicubic upscale, black background, single slowly-drifting accent.
@@ -172,7 +161,7 @@ const FRAG_COLOR = `#version 300 es
 precision highp float;
 uniform sampler2D uState;
 uniform vec2 uResolution, uSimSize, uSimTexel;
-uniform float uGain, uGamma, uGlow, uVignette, uHue, uFade;
+uniform float uGain, uGamma, uGlow, uVignette, uHue;
 out vec4 outColor;
 float field(vec2 uv){ return texture(uState, uv).r; }
 float fetch(ivec2 p){ ivec2 s = ivec2(uSimSize); p = ((p % s) + s) % s; return texelFetch(uState, p, 0).r; }
@@ -186,8 +175,8 @@ float fieldCubic(vec2 uv){
 vec3 accent(float h){ return 0.55 + 0.45*cos(6.28318*(h + vec3(0.0,0.20,0.40))); }
 vec3 shade(float v, vec3 ac){
   float t = pow(clamp(v*uGain,0.0,1.0), uGamma);
-  vec3 col = mix(vec3(0.0), ac, smoothstep(0.0,0.55,t));     // black -> accent
-  col = mix(col, vec3(1.0), smoothstep(0.80,1.0,t)*0.6);     // hot cores -> white
+  vec3 col = mix(vec3(0.0), ac, smoothstep(0.0,0.55,t));
+  col = mix(col, vec3(1.0), smoothstep(0.80,1.0,t)*0.6);
   return col;
 }
 void main(){
@@ -200,30 +189,14 @@ void main(){
             + field(uv+o)+field(uv-o)+field(uv+vec2(o.x,-o.y))+field(uv+vec2(-o.x,o.y));
     col += shade(b*0.125, ac) * uGlow;
   }
-  col *= uFade;
   vec2 q = uv - 0.5; col *= 1.0 - uVignette*dot(q,q)*2.0;
   outColor = vec4(max(col,0.0), 1.0);
 }`;
 
-const progLenia = program(VERT, FRAG_LENIA);
-const progStamp = program(VERT, FRAG_STAMP);
+const progSim = program(VERT, FRAG_SIM);
+const progRain = program(VERT, FRAG_RAIN);
 const progColor = program(VERT, FRAG_COLOR);
 gl.bindVertexArray(gl.createVertexArray());
-
-// Build a sampled texture for each creature once.
-const CRE = CREATURES.map(c => {
-  const { w, h, data } = decodeCells(c.cells);
-  const tex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, w, h, 0, gl.RED, gl.FLOAT, data);
-  const filt = floatLinear ? gl.LINEAR : gl.NEAREST;
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filt);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filt);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  return { tex, w, h, m: c.m, s: c.s, name: c.name };
-});
 
 /* ===========================================================================
    Ping-pong simulation textures
@@ -235,7 +208,7 @@ function makeTarget(w, h) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, w, h, 0, gl.RG, gl.HALF_FLOAT, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);   // torus: gliders wrap forever
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);   // torus
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
   const fbo = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
@@ -252,72 +225,46 @@ function allocate() {
   if (texA) { gl.deleteTexture(texA.tex); gl.deleteFramebuffer(texA.fbo); }
   if (texB) { gl.deleteTexture(texB.tex); gl.deleteFramebuffer(texB.fbo); }
   texA = makeTarget(simW, simH); texB = makeTarget(simW, simH);
-  startCycle(curIdx, performance.now() / 1000);
-}
-
-/* ===========================================================================
-   Seeding & cycling
-   =========================================================================== */
-let curIdx = 0, cycleStart = 0, lastTopUp = 0, baseAngle = 0, baseFlip = 1;
-
-function clearField() {
-  for (const t of [texA, texB]) { gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo); gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT); }
   src = texA; dst = texB;
-}
-function stampCreature(cre, cx, cy, angle, flip) {
-  gl.useProgram(progStamp);
-  gl.viewport(0, 0, simW, simH);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
-  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src.tex);
-  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, cre.tex);
-  gl.uniform1i(progStamp._u('uState'), 0);
-  gl.uniform1i(progStamp._u('uCre'), 1);
-  gl.uniform2f(progStamp._u('uTexel'), 1/simW, 1/simH);
-  gl.uniform2f(progStamp._u('uCreSize'), cre.w, cre.h);
-  gl.uniform2f(progStamp._u('uCenter'), cx, cy);
-  gl.uniform1f(progStamp._u('uCos'), Math.cos(angle));
-  gl.uniform1f(progStamp._u('uSin'), Math.sin(angle));
-  gl.uniform1f(progStamp._u('uFlip'), flip);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-  [src, dst] = [dst, src];
-}
-function seedSchool(cre) {
-  const n = CONFIG.seedCount, aspect = simW / simH;
-  let cols = Math.max(1, Math.round(Math.sqrt(n * aspect))), rows = Math.ceil(n / cols), placed = 0;
-  for (let r = 0; r < rows && placed < n; r++) for (let c = 0; c < cols && placed < n; c++, placed++) {
-    const cx = (c + 0.5 + (Math.random()-0.5)*0.5) / cols * simW;
-    const cy = (r + 0.5 + (Math.random()-0.5)*0.5) / rows * simH;
-    stampCreature(cre, cx, cy, baseAngle + (Math.random()-0.5)*CONFIG.alignJitter, baseFlip);
-  }
-}
-function startCycle(idx, time) {
-  curIdx = idx;
-  cycleStart = time; lastTopUp = time;
-  baseAngle = Math.random() * Math.PI * 2;
-  baseFlip = Math.random() < 0.5 ? 1 : -1;
-  clearField();
-  seedSchool(CRE[idx]);
+  // Seed the whole field with random soup.
+  rain(simW / 2, simH / 2, Math.max(simW, simH), 1.0);
 }
 
 /* ===========================================================================
-   Steps & render
+   Passes
    =========================================================================== */
-function simStep() {
-  const cre = CRE[curIdx];
-  gl.useProgram(progLenia);
+function rain(cx, cy, radius, amount) {
+  gl.useProgram(progRain);
   gl.viewport(0, 0, simW, simH);
   gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src.tex);
-  gl.uniform1i(progLenia._u('uState'), 0);
-  gl.uniform2f(progLenia._u('uTexel'), 1/simW, 1/simH);
-  gl.uniform1f(progLenia._u('uR'), CONFIG.R);
-  gl.uniform1f(progLenia._u('uM'), cre.m);
-  gl.uniform1f(progLenia._u('uS'), cre.s);
-  gl.uniform1f(progLenia._u('uDt'), CONFIG.dt);
+  gl.uniform1i(progRain._u('uState'), 0);
+  gl.uniform2f(progRain._u('uTexel'), 1/simW, 1/simH);
+  gl.uniform2f(progRain._u('uCenter'), cx, cy);
+  gl.uniform1f(progRain._u('uRadius'), radius);
+  gl.uniform1f(progRain._u('uAmount'), amount);
+  gl.uniform1f(progRain._u('uSeed'), Math.random() * 1000.0);
+  gl.uniform1f(progRain._u('uBlock'), CONFIG.seedBlock);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   [src, dst] = [dst, src];
 }
-function display(time, fade) {
+function simStep() {
+  gl.useProgram(progSim);
+  gl.viewport(0, 0, simW, simH);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src.tex);
+  gl.uniform1i(progSim._u('uState'), 0);
+  gl.uniform2f(progSim._u('uTexel'), 1/simW, 1/simH);
+  gl.uniform1f(progSim._u('uRi'), CONFIG.ri);
+  gl.uniform1f(progSim._u('uRa'), CONFIG.ra);
+  gl.uniform1f(progSim._u('uDt'), CONFIG.dt);
+  gl.uniform1f(progSim._u('uB1'), CONFIG.b1); gl.uniform1f(progSim._u('uB2'), CONFIG.b2);
+  gl.uniform1f(progSim._u('uD1'), CONFIG.d1); gl.uniform1f(progSim._u('uD2'), CONFIG.d2);
+  gl.uniform1f(progSim._u('uAlphaN'), CONFIG.alphaN); gl.uniform1f(progSim._u('uAlphaM'), CONFIG.alphaM);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  [src, dst] = [dst, src];
+}
+function display(time) {
   const lk = CONFIG.look;
   gl.useProgram(progColor);
   gl.viewport(0, 0, canvas.width, canvas.height);
@@ -332,12 +279,13 @@ function display(time, fade) {
   gl.uniform1f(progColor._u('uGlow'), lk.glow);
   gl.uniform1f(progColor._u('uVignette'), lk.vignette);
   gl.uniform1f(progColor._u('uHue'), (time * lk.hueSpeed) % 1);
-  gl.uniform1f(progColor._u('uFade'), fade);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
-const ss = x => { x = x < 0 ? 0 : x > 1 ? 1 : x; return x * x * (3 - 2 * x); };
-let running = true, lastFrame = 0;
+/* ===========================================================================
+   Loop
+   =========================================================================== */
+let running = true, lastFrame = 0, lastRain = 0;
 function frame(tMs) {
   if (!running) return;
   requestAnimationFrame(frame);
@@ -345,16 +293,13 @@ function frame(tMs) {
   lastFrame = tMs;
   const time = tMs / 1000;
 
-  let phase = time - cycleStart;
-  if (phase >= CONFIG.cycleSec) { startCycle((curIdx + 1) % CRE.length, time); phase = 0; }
-  else if (time - lastTopUp > CONFIG.topUpSec) {
-    lastTopUp = time;
-    stampCreature(CRE[curIdx], Math.random()*simW, Math.random()*simH,
-                  baseAngle + (Math.random()-0.5)*CONFIG.alignJitter, baseFlip);
+  if (time - lastRain > CONFIG.rainSec) {
+    lastRain = time;
+    const radius = CONFIG.rainRadiusFrac * Math.min(simW, simH);
+    for (let i = 0; i < CONFIG.rainCount; i++) rain(Math.random()*simW, Math.random()*simH, radius, CONFIG.rainAmount);
   }
   simStep();
-  const f = CONFIG.fadeSec;
-  display(time, ss(phase / f) * ss((CONFIG.cycleSec - phase) / f));
+  display(time);
 }
 
 document.addEventListener('visibilitychange', () => {
