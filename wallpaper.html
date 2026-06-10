@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>SmoothLife — Living Wallpaper</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  #fallback {
+    position: fixed; inset: 0; display: none; place-items: center;
+    color: #9aa; font: 14px/1.5 -apple-system, system-ui, sans-serif; text-align: center; padding: 2rem;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="fallback">This needs WebGL2.<br />Open in a recent Safari, Chrome, or Firefox.</div>
+
+<script>
+"use strict";
+/* ===========================================================================
+   SmoothLife — a hands-off, endlessly churning living wallpaper.
+
+   SmoothLife (Stephan Rafler, 2011) is a continuous generalization of Conway's
+   Game of Life. Unlike many Lenia regimes (which settle into static Turing
+   patterns), SmoothLife in this parameter set CHURNS PERPETUALLY and emits
+   gliders that emerge on their own from random soup — exactly the "alive,
+   never-settling" behaviour we want, with no seeding or choreography.
+
+   Each step, for every cell, it measures two smooth neighbourhood averages:
+     m = fill of the INNER disk (radius ri)   -> "am I alive?"
+     n = fill of the OUTER ring (ri..ra)       -> "how crowded is my neighbourhood?"
+   A smooth birth/survival transition s(n,m) then nudges the cell up or down.
+
+   A gentle "rain" of fresh random soup keeps new activity appearing forever.
+   Colour drifts slowly and tastefully. No controls, no UI — it just runs.
+   =========================================================================== */
+
+const CONFIG = {
+  simLongAxis: 380,    // sim grid long side (smaller = bigger features + lighter)
+  maxDPR: 1.5,
+  fps: 30,
+
+  // SmoothLife neighbourhood radii (in sim pixels). ra ~ 3*ri. Larger = bigger life.
+  ri: 4.0,
+  ra: 12.0,
+  dt: 0.13,            // smooth-time step
+
+  // Rafler's classic glider-producing transition parameters.
+  b1: 0.278, b2: 0.365,   // birth interval
+  d1: 0.267, d2: 0.445,   // survival interval
+  alphaN: 0.028,          // sharpness of the neighbourhood threshold
+  alphaM: 0.147,          // sharpness of the "aliveness" blend
+
+  // Rain: keep new life appearing so it never stalls.
+  rainSec: 5,
+  rainCount: 3,
+  rainRadiusFrac: 0.10,   // patch radius as a fraction of the smaller sim axis
+  rainAmount: 0.9,
+
+  look: { gain: 1.15, gamma: 0.9, glow: 0.45, vignette: 0.12, hueSpeed: 1 / 240 },
+};
+
+/* ===========================================================================
+   WebGL plumbing
+   =========================================================================== */
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false,
+                                         powerPreference: 'low-power', premultipliedAlpha: false });
+if (!gl) { document.getElementById('fallback').style.display = 'grid'; throw new Error('WebGL2 unavailable'); }
+if (!gl.getExtension('EXT_color_buffer_float')) {
+  const f = document.getElementById('fallback');
+  f.style.display = 'grid';
+  f.textContent = "This GPU/browser can't render to float textures. Try a recent Safari/Chrome/Firefox.";
+  throw new Error('EXT_color_buffer_float unavailable');
+}
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) + '\n' + src);
+  return s;
+}
+function program(vsrc, fsrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vsrc));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  p._c = {}; p._u = n => (n in p._c) ? p._c[n] : (p._c[n] = gl.getUniformLocation(p, n));
+  return p;
+}
+
+const VERT = `#version 300 es
+void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0,0.,1.); }`;
+
+// SmoothLife update.
+const FRAG_SIM = `#version 300 es
+precision highp float;
+uniform sampler2D uState;
+uniform vec2 uTexel;
+uniform float uRi, uRa, uDt;
+uniform float uB1, uB2, uD1, uD2, uAlphaN, uAlphaM;
+out vec4 outColor;
+
+float sig1(float x, float a, float al){ return 1.0 / (1.0 + exp(-(x - a) * 4.0 / al)); }
+float sig2(float x, float a, float b){ return sig1(x, a, uAlphaN) * (1.0 - sig1(x, b, uAlphaN)); }
+float sigm(float x, float y, float m){ float k = sig1(m, 0.5, uAlphaM); return x * (1.0 - k) + y * k; }
+float trans(float n, float m){ return sig2(n, sigm(uB1, uD1, m), sigm(uB2, uD2, m)); }
+
+void main(){
+  vec2 uv = gl_FragCoord.xy * uTexel;
+  float f = texture(uState, uv).r;
+
+  float inSum = 0.0, inW = 0.0, outSum = 0.0, outW = 0.0;
+  int iR = int(ceil(uRa));
+  for (int dy=-iR; dy<=iR; dy++) for (int dx=-iR; dx<=iR; dx++){
+    vec2 off = vec2(float(dx), float(dy));
+    float d = length(off);
+    if (d <= uRa + 1.0){
+      float s = texture(uState, uv + off * uTexel).r;          // REPEAT-wrapped
+      float wi = 1.0 - smoothstep(uRi - 1.0, uRi + 1.0, d);     // inner disk
+      float wo = smoothstep(uRi - 1.0, uRi + 1.0, d) - smoothstep(uRa - 1.0, uRa + 1.0, d); // outer ring
+      inSum += wi * s; inW += wi;
+      outSum += wo * s; outW += wo;
+    }
+  }
+  float m = inSum / max(inW, 1e-9);
+  float n = outSum / max(outW, 1e-9);
+
+  float nf = clamp(f + uDt * (2.0 * trans(n, m) - 1.0), 0.0, 1.0);
+  outColor = vec4(nf, 0.0, 0.0, 1.0);
+}`;
+
+// Rain / seed: write random soup inside a disk (radius huge => full-field seed).
+const FRAG_RAIN = `#version 300 es
+precision highp float;
+uniform sampler2D uState;
+uniform vec2 uTexel, uCenter;
+uniform float uRadius, uAmount, uSeed;
+out vec4 outColor;
+float hash(vec2 p){ p = fract(p * vec2(123.34, 345.45)); p += dot(p, p + 34.345); return fract(p.x * p.y); }
+void main(){
+  float f = texture(uState, gl_FragCoord.xy * uTexel).r;
+  if (distance(gl_FragCoord.xy, uCenter) <= uRadius){
+    float r = hash(gl_FragCoord.xy * 0.71 + uSeed);
+    f = mix(f, r, uAmount);
+  }
+  outColor = vec4(f, 0.0, 0.0, 1.0);
+}`;
+
+// Display: bicubic upscale, black background, single slowly-drifting accent.
+const FRAG_COLOR = `#version 300 es
+precision highp float;
+uniform sampler2D uState;
+uniform vec2 uResolution, uSimSize, uSimTexel;
+uniform float uGain, uGamma, uGlow, uVignette, uHue;
+out vec4 outColor;
+float field(vec2 uv){ return texture(uState, uv).r; }
+float fetch(ivec2 p){ ivec2 s = ivec2(uSimSize); p = ((p % s) + s) % s; return texelFetch(uState, p, 0).r; }
+vec4 cm(float x){ float x2=x*x,x3=x2*x; return vec4(-0.5*x3+x2-0.5*x, 1.5*x3-2.5*x2+1.0, -1.5*x3+2.0*x2+0.5*x, 0.5*x3-0.5*x2); }
+float fieldCubic(vec2 uv){
+  vec2 c = uv*uSimSize - 0.5; vec2 f = fract(c); ivec2 i = ivec2(floor(c));
+  vec4 wx = cm(f.x), wy = cm(f.y); float r = 0.0;
+  for (int m=-1;m<=2;m++){ float row=0.0; for(int n=-1;n<=2;n++) row += wx[n+1]*fetch(i+ivec2(n,m)); r += wy[m+1]*row; }
+  return r;
+}
+vec3 accent(float h){ return 0.55 + 0.45*cos(6.28318*(h + vec3(0.0,0.20,0.40))); }
+vec3 shade(float v, vec3 ac){
+  float t = pow(clamp(v*uGain,0.0,1.0), uGamma);
+  vec3 col = mix(vec3(0.0), ac, smoothstep(0.0,0.55,t));
+  col = mix(col, vec3(1.0), smoothstep(0.80,1.0,t)*0.6);
+  return col;
+}
+void main(){
+  vec2 uv = gl_FragCoord.xy / uResolution;
+  vec3 ac = accent(uHue);
+  vec3 col = shade(clamp(fieldCubic(uv),0.0,1.0), ac);
+  if (uGlow > 0.0){
+    vec2 o = uSimTexel*1.5;
+    float b = field(uv+vec2(o.x,0.))+field(uv-vec2(o.x,0.))+field(uv+vec2(0.,o.y))+field(uv-vec2(0.,o.y))
+            + field(uv+o)+field(uv-o)+field(uv+vec2(o.x,-o.y))+field(uv+vec2(-o.x,o.y));
+    col += shade(b*0.125, ac) * uGlow;
+  }
+  vec2 q = uv - 0.5; col *= 1.0 - uVignette*dot(q,q)*2.0;
+  outColor = vec4(max(col,0.0), 1.0);
+}`;
+
+const progSim = program(VERT, FRAG_SIM);
+const progRain = program(VERT, FRAG_RAIN);
+const progColor = program(VERT, FRAG_COLOR);
+gl.bindVertexArray(gl.createVertexArray());
+
+/* ===========================================================================
+   Ping-pong simulation textures
+   =========================================================================== */
+let texA, texB, simW, simH, src, dst;
+function makeTarget(w, h) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, w, h, 0, gl.RG, gl.HALF_FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);   // torus
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  return { tex, fbo };
+}
+function allocate() {
+  const dpr = Math.min(window.devicePixelRatio || 1, CONFIG.maxDPR);
+  canvas.width = Math.max(2, Math.floor(window.innerWidth * dpr));
+  canvas.height = Math.max(2, Math.floor(window.innerHeight * dpr));
+  const aspect = canvas.width / canvas.height;
+  if (aspect >= 1) { simW = CONFIG.simLongAxis; simH = Math.max(8, Math.round(CONFIG.simLongAxis / aspect)); }
+  else { simH = CONFIG.simLongAxis; simW = Math.max(8, Math.round(CONFIG.simLongAxis * aspect)); }
+  if (texA) { gl.deleteTexture(texA.tex); gl.deleteFramebuffer(texA.fbo); }
+  if (texB) { gl.deleteTexture(texB.tex); gl.deleteFramebuffer(texB.fbo); }
+  texA = makeTarget(simW, simH); texB = makeTarget(simW, simH);
+  src = texA; dst = texB;
+  // Seed the whole field with random soup.
+  rain(simW / 2, simH / 2, Math.max(simW, simH), 1.0);
+}
+
+/* ===========================================================================
+   Passes
+   =========================================================================== */
+function rain(cx, cy, radius, amount) {
+  gl.useProgram(progRain);
+  gl.viewport(0, 0, simW, simH);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src.tex);
+  gl.uniform1i(progRain._u('uState'), 0);
+  gl.uniform2f(progRain._u('uTexel'), 1/simW, 1/simH);
+  gl.uniform2f(progRain._u('uCenter'), cx, cy);
+  gl.uniform1f(progRain._u('uRadius'), radius);
+  gl.uniform1f(progRain._u('uAmount'), amount);
+  gl.uniform1f(progRain._u('uSeed'), Math.random() * 1000.0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  [src, dst] = [dst, src];
+}
+function simStep() {
+  gl.useProgram(progSim);
+  gl.viewport(0, 0, simW, simH);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src.tex);
+  gl.uniform1i(progSim._u('uState'), 0);
+  gl.uniform2f(progSim._u('uTexel'), 1/simW, 1/simH);
+  gl.uniform1f(progSim._u('uRi'), CONFIG.ri);
+  gl.uniform1f(progSim._u('uRa'), CONFIG.ra);
+  gl.uniform1f(progSim._u('uDt'), CONFIG.dt);
+  gl.uniform1f(progSim._u('uB1'), CONFIG.b1); gl.uniform1f(progSim._u('uB2'), CONFIG.b2);
+  gl.uniform1f(progSim._u('uD1'), CONFIG.d1); gl.uniform1f(progSim._u('uD2'), CONFIG.d2);
+  gl.uniform1f(progSim._u('uAlphaN'), CONFIG.alphaN); gl.uniform1f(progSim._u('uAlphaM'), CONFIG.alphaM);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  [src, dst] = [dst, src];
+}
+function display(time) {
+  const lk = CONFIG.look;
+  gl.useProgram(progColor);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src.tex);
+  gl.uniform1i(progColor._u('uState'), 0);
+  gl.uniform2f(progColor._u('uResolution'), canvas.width, canvas.height);
+  gl.uniform2f(progColor._u('uSimSize'), simW, simH);
+  gl.uniform2f(progColor._u('uSimTexel'), 1/simW, 1/simH);
+  gl.uniform1f(progColor._u('uGain'), lk.gain);
+  gl.uniform1f(progColor._u('uGamma'), lk.gamma);
+  gl.uniform1f(progColor._u('uGlow'), lk.glow);
+  gl.uniform1f(progColor._u('uVignette'), lk.vignette);
+  gl.uniform1f(progColor._u('uHue'), (time * lk.hueSpeed) % 1);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+/* ===========================================================================
+   Loop
+   =========================================================================== */
+let running = true, lastFrame = 0, lastRain = 0;
+function frame(tMs) {
+  if (!running) return;
+  requestAnimationFrame(frame);
+  if (tMs - lastFrame < 1000 / CONFIG.fps) return;
+  lastFrame = tMs;
+  const time = tMs / 1000;
+
+  if (time - lastRain > CONFIG.rainSec) {
+    lastRain = time;
+    const radius = CONFIG.rainRadiusFrac * Math.min(simW, simH);
+    for (let i = 0; i < CONFIG.rainCount; i++) rain(Math.random()*simW, Math.random()*simH, radius, CONFIG.rainAmount);
+  }
+  simStep();
+  display(time);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) running = false;
+  else if (!running) { running = true; lastFrame = 0; requestAnimationFrame(frame); }
+});
+let resizeTimer = null;
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(allocate, 200); });
+
+allocate();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
