@@ -24,7 +24,7 @@
    SmoothLife — a hands-off, endlessly churning living wallpaper.
 
    SmoothLife (Stephan Rafler, 2011) is a continuous generalization of Conway's
-   Game of Life. Unlike many Lenia regimes (which settle into static Turing
+   Game of Life. Unlike most Lenia regimes (which settle into static Turing
    patterns), SmoothLife in this parameter set CHURNS PERPETUALLY and emits
    gliders that emerge on their own from random soup — exactly the "alive,
    never-settling" behaviour we want, with no seeding or choreography.
@@ -39,26 +39,28 @@
    =========================================================================== */
 
 const CONFIG = {
-  simLongAxis: 380,    // sim grid long side (smaller = bigger features + lighter)
+  simLongAxis: 300,    // sim grid long side (smaller = bigger features + lighter)
   maxDPR: 1.5,
   fps: 30,
 
-  // SmoothLife neighbourhood radii (in sim pixels). ra ~ 3*ri. Larger = bigger life.
-  ri: 4.0,
-  ra: 12.0,
-  dt: 0.13,            // smooth-time step
+  // SmoothLife neighbourhood radii (in sim pixels). ra ~ 3*ri. Larger = bigger
+  // life, and gliders need a well-resolved radius (they dissolve when too small).
+  ri: 7.0,
+  ra: 21.0,
+  dt: 0.05,            // smooth-time step (too large collapses to a static state)
 
-  // Rafler's classic glider-producing transition parameters.
-  b1: 0.278, b2: 0.365,   // birth interval
-  d1: 0.267, d2: 0.445,   // survival interval
+  // Verified glider-producing transition parameters (Rafler / tsoding).
+  b1: 0.257, b2: 0.336,   // birth interval
+  d1: 0.365, d2: 0.549,   // survival interval
   alphaN: 0.028,          // sharpness of the neighbourhood threshold
   alphaM: 0.147,          // sharpness of the "aliveness" blend
 
-  // Rain: keep new life appearing so it never stalls.
-  rainSec: 5,
-  rainCount: 3,
+  // Rain: occasionally stir in fresh soup so new gliders keep being born.
+  rainSec: 9,
+  rainCount: 2,
   rainRadiusFrac: 0.10,   // patch radius as a fraction of the smaller sim axis
   rainAmount: 0.9,
+  seedBlock: 7.0,         // soup block size (~ri) so the field has density variation
 
   look: { gain: 1.15, gamma: 0.9, glow: 0.45, vignette: 0.12, hueSpeed: 1 / 240 },
 };
@@ -139,13 +141,16 @@ const FRAG_RAIN = `#version 300 es
 precision highp float;
 uniform sampler2D uState;
 uniform vec2 uTexel, uCenter;
-uniform float uRadius, uAmount, uSeed;
+uniform float uRadius, uAmount, uSeed, uBlock;
 out vec4 outColor;
 float hash(vec2 p){ p = fract(p * vec2(123.34, 345.45)); p += dot(p, p + 34.345); return fract(p.x * p.y); }
 void main(){
   float f = texture(uState, gl_FragCoord.xy * uTexel).r;
   if (distance(gl_FragCoord.xy, uCenter) <= uRadius){
-    float r = hash(gl_FragCoord.xy * 0.71 + uSeed);
+    // Blocky soup: random values in cells ~ri across, so the large-radius
+    // neighbourhood averages actually vary and dynamics can take hold.
+    vec2 cell = floor(gl_FragCoord.xy / uBlock);
+    float r = hash(cell + uSeed);
     f = mix(f, r, uAmount);
   }
   outColor = vec4(f, 0.0, 0.0, 1.0);
@@ -239,6 +244,7 @@ function rain(cx, cy, radius, amount) {
   gl.uniform1f(progRain._u('uRadius'), radius);
   gl.uniform1f(progRain._u('uAmount'), amount);
   gl.uniform1f(progRain._u('uSeed'), Math.random() * 1000.0);
+  gl.uniform1f(progRain._u('uBlock'), CONFIG.seedBlock);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   [src, dst] = [dst, src];
 }
