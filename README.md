@@ -36,8 +36,15 @@ averages — the fill of an inner disk (radius `ri`, "am I alive?") and of an
 outer ring (`ri..ra`, "how crowded am I?") — then a smooth birth/survival rule
 `s(n,m)` nudges the cell up or down via `f += dt·(2·s − 1)`.
 
-The parameters are the verified glider-producing set (Rafler / tsoding):
-`ri=7, ra=21, b1=0.257, b2=0.336, d1=0.365, d2=0.549, αn=0.028, αm=0.147, dt=0.05`.
+The parameters are the verified glider-producing transition set (Rafler /
+tsoding): `b1=0.257, b2=0.336, d1=0.365, d2=0.549, αn=0.028, αm=0.147`.
+
+**Room matters most.** If the grid is only a few glider-widths across, the whole
+field locks into one global standing pattern (the labyrinth) instead of hosting
+separate gliders. So we keep the radius modest (`ra=12`) and the grid large
+(`simLongAxis=480` → ~40 glider-widths) — and a regular "rain" of fresh soup
+keeps it churning. On a narrow window (e.g. a phone in portrait) there's less
+room, so it's happiest full-screen on a wide display.
 
 ## Run it on macOS
 

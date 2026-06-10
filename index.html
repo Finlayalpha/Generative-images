@@ -39,15 +39,18 @@
    =========================================================================== */
 
 const CONFIG = {
-  simLongAxis: 300,    // sim grid long side (smaller = bigger features + lighter)
+  // The field must be MANY glider-widths across or it locks into one global
+  // standing pattern (the labyrinth). Reference impls use ~24+ widths. We keep
+  // the radius modest and the grid large so there's plenty of room to churn.
+  simLongAxis: 480,    // sim grid long side
   maxDPR: 1.5,
   fps: 30,
 
-  // SmoothLife neighbourhood radii (in sim pixels). ra ~ 3*ri. Larger = bigger
-  // life, and gliders need a well-resolved radius (they dissolve when too small).
-  ri: 7.0,
-  ra: 21.0,
-  dt: 0.05,            // smooth-time step (too large collapses to a static state)
+  // SmoothLife neighbourhood radii (in sim pixels). ra ~ 3*ri. Gliders dissolve
+  // below ra~11, so 12 is the light-but-stable sweet spot (480/12 = 40 widths).
+  ri: 4.0,
+  ra: 12.0,
+  dt: 0.10,            // smooth-time step
 
   // Verified glider-producing transition parameters (Rafler / tsoding).
   b1: 0.257, b2: 0.336,   // birth interval
@@ -55,12 +58,13 @@ const CONFIG = {
   alphaN: 0.028,          // sharpness of the neighbourhood threshold
   alphaM: 0.147,          // sharpness of the "aliveness" blend
 
-  // Rain: occasionally stir in fresh soup so new gliders keep being born.
-  rainSec: 9,
-  rainCount: 2,
-  rainRadiusFrac: 0.10,   // patch radius as a fraction of the smaller sim axis
+  // Rain: regularly stir in fresh soup so the field keeps churning and never
+  // fully locks up; also keeps new gliders being born.
+  rainSec: 6,
+  rainCount: 3,
+  rainRadiusFrac: 0.12,   // patch radius as a fraction of the smaller sim axis
   rainAmount: 0.9,
-  seedBlock: 7.0,         // soup block size (~ri) so the field has density variation
+  seedBlock: 4.0,         // soup block size (~ri) so the field has density variation
 
   look: { gain: 1.15, gamma: 0.9, glow: 0.45, vignette: 0.12, hueSpeed: 1 / 240 },
 };
