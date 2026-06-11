@@ -64,8 +64,8 @@ const CONFIG = {
   fps: 30,
 
   look: {
-    pointSize: 0.085,     // glow radius as a fraction of canvas height
-    gain: 0.13, gamma: 0.75, vignette: 0.12,   // static heat ramp (denser = hotter)
+    pointSize: 0.058,     // glow radius as a fraction of canvas height (smaller = sharper)
+    gain: 0.36, gamma: 0.70, vignette: 0.12,   // static heat ramp (denser = hotter)
   },
 };
 
@@ -113,7 +113,7 @@ precision highp float;
 out vec4 o;
 void main(){
   vec2 d = gl_PointCoord - 0.5;
-  float v = exp(-dot(d, d) * 12.0);     // gaussian splat
+  float v = exp(-dot(d, d) * 18.0);     // tighter gaussian splat (sharper)
   o = vec4(v, 0.0, 0.0, 1.0);
 }`;
 
