@@ -44,12 +44,17 @@
 
 const CONFIG = {
   // World is measured in Lenia units (a "cell" is ~2·μ_k ≈ 8 units across).
-  // Lower density (fewer particles in a larger world) keeps the cells DISCRETE —
-  // a handful of separate "creatures" with black space between them, rather than
-  // a space-filling foam.
-  worldHeight: 48,        // world height in units; width follows the aspect ratio
-  nParticles: 700,
-  substeps: 2,            // sim steps per displayed frame
+  // DENSITY IS THE WHOLE BALLGAME. A particle only feels cohesion once its
+  // field U reaches the growth peak μ_g (0.6). For a roughly uniform sheet,
+  // U ≈ density · w_k · ∫K ≈ density · ~1.0, so we want the average density
+  // near ~0.6 particles/unit²: that lands the system in the "spots" regime
+  // where particles condense into discrete ring-shaped cells separated by
+  // void. Too sparse (the old 0.17) and U never reaches μ_g → no growth → a
+  // non-interacting gas of drifting dots. We hit that density with a SMALL
+  // world (cheap O(N) neighbour loop) rather than a huge particle count.
+  worldHeight: 26,        // world height in units; width follows the aspect ratio
+  nParticles: 800,        // ⇒ density ≈ 0.6 /unit² → cells actually condense
+  substeps: 1,            // sim steps per displayed frame
   dt: 0.1,
 
   // Particle Lenia parameters (Google Research defaults).
@@ -61,16 +66,16 @@ const CONFIG = {
   // equilibrium so cells slowly crawl, rotate, merge and split forever — but
   // kept small so the genuine Lenia self-organisation (sharp ring-shaped
   // membranes) dominates instead of being sheared into churning foam.
-  v0: 0.05,               // self-propulsion speed (too high frays the ring cells)
-  turn: 0.25,             // per-step heading wander (radians)
-  noise: 0.003,           // small extra translational jitter (anti-freeze)
+  v0: 0.04,               // self-propulsion speed (too high frays the ring cells)
+  turn: 0.2,              // per-step heading wander (radians)
+  noise: 0.002,           // small extra translational jitter (anti-freeze)
   maxDPR: 1.5,
   fps: 30,
 
   look: {
     // Render particles as small, crisp dots so the ring/membrane structure of
     // each cell is visible in space — NOT fused into a smooth blob field.
-    pointSize: 0.013,     // dot radius as a fraction of screen height
+    pointSize: 0.015,     // dot radius as a fraction of screen height
     gain: 0.5, gamma: 0.85, vignette: 0.12,   // heat ramp (denser = hotter)
   },
 };
