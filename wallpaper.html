@@ -67,8 +67,9 @@ const CONFIG = {
   fps: 30,
 
   look: {
-    pointSize: 0.065,     // glow radius as a fraction of canvas height
-    gain: 0.50, gamma: 0.70, vignette: 0.12,   // static heat ramp (denser = hotter)
+    pointSize: 0.10,      // glow radius (big enough to fuse a cluster's particles
+                          // into one smooth, cohesive-looking cell)
+    gain: 0.24, gamma: 0.70, vignette: 0.12,   // static heat ramp (denser = hotter)
   },
 };
 
