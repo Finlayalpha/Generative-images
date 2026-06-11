@@ -44,8 +44,8 @@
 
 const CONFIG = {
   // World is measured in Lenia units (a "cell" is ~2·μ_k ≈ 8 units across).
-  worldHeight: 34,        // world height in units; width follows the aspect ratio
-  nParticles: 1000,
+  worldHeight: 38,        // world height in units; width follows the aspect ratio
+  nParticles: 900,
   substeps: 2,            // sim steps per displayed frame
   dt: 0.1,
 
@@ -54,7 +54,12 @@ const CONFIG = {
   mu_g: 0.6, sigma_g: 0.15,
   c_rep: 1.0,
 
-  noise: 0.012,           // thermal jitter so it can never fully freeze
+  // Active matter: each particle self-propels along a slowly-wandering heading.
+  // This keeps the system permanently out of equilibrium, so it never settles
+  // into a static foam — cells swim, collide, merge and split forever.
+  v0: 0.45,               // self-propulsion speed
+  turn: 0.4,              // per-step heading wander (radians)
+  noise: 0.004,           // small extra translational jitter
   maxDPR: 1.5,
   fps: 30,
 
@@ -158,6 +163,7 @@ const colVao = gl.createVertexArray();   // empty VAO for the fullscreen pass
    =========================================================================== */
 const N = CONFIG.nParticles;
 const px = new Float32Array(N), py = new Float32Array(N);
+const th = new Float32Array(N);          // self-propulsion heading per particle
 const U  = new Float32Array(N);
 const upload = new Float32Array(N * 2);
 let worldW, worldH;
@@ -165,7 +171,10 @@ let worldW, worldH;
 function initParticles() {
   worldH = CONFIG.worldHeight;
   worldW = worldH * (canvas.width / canvas.height);
-  for (let i = 0; i < N; i++) { px[i] = Math.random() * worldW; py[i] = Math.random() * worldH; }
+  for (let i = 0; i < N; i++) {
+    px[i] = Math.random() * worldW; py[i] = Math.random() * worldH;
+    th[i] = Math.random() * Math.PI * 2;
+  }
 }
 
 let accTex, accFbo;
@@ -267,8 +276,10 @@ function step() {
     }
     // force = -gradR + G'(U)·gradU
     let fx = -grX + Gp * guX, fy = -grY + Gp * guY;
-    fx += (Math.random() - 0.5) * CONFIG.noise;
-    fy += (Math.random() - 0.5) * CONFIG.noise;
+    // Active self-propulsion: wander the heading, then drive along it.
+    th[i] += (Math.random() - 0.5) * CONFIG.turn;
+    fx += CONFIG.v0 * Math.cos(th[i]) + (Math.random() - 0.5) * CONFIG.noise;
+    fy += CONFIG.v0 * Math.sin(th[i]) + (Math.random() - 0.5) * CONFIG.noise;
     let nx = xi + dt * fx, ny = yi + dt * fy;
     nx -= Math.floor(nx / worldW) * worldW;               // torus wrap
     ny -= Math.floor(ny / worldH) * worldH;

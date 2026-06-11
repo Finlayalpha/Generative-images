@@ -28,7 +28,15 @@ dp_i/dt = −∇E(p_i)                         move down the energy gradient
 ```
 
 Defaults are Google Research's: `μ_k=4, σ_k=1, w_k=0.022, μ_g=0.6, σ_g=0.15,
-c_rep=1, dt=0.1`. A whisper of thermal noise guarantees it never settles.
+c_rep=1, dt=0.1`.
+
+**Active matter so it never crystallizes.** Pure gradient-flow Particle Lenia
+eventually descends into a low-energy jammed foam and stops changing. To keep it
+permanently alive, each particle also *self-propels* along a slowly-wandering
+heading (`v0`, `turn`). Active matter is physically incapable of reaching
+equilibrium, so the cells perpetually swim, collide, merge and split. Verified
+headless over ~4000 steps: cohesion holds (`meanU` steady) while the
+configuration keeps reorganizing at a constant rate (no settling).
 
 ## Look
 
