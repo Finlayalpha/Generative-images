@@ -57,19 +57,21 @@ const CONFIG = {
   mu_g: 0.6, sigma_g: 0.15,
   c_rep: 1.0,
 
-  // Active matter: each particle self-propels along a slowly-wandering heading,
-  // so the system stays out of equilibrium and the creatures keep swimming,
-  // colliding, merging and splitting forever (a stable population of ~10).
-  v0: 0.20,               // self-propulsion speed (higher = friskier, too high frays cells)
-  turn: 0.4,              // per-step heading wander (radians)
-  noise: 0.004,           // small extra translational jitter
+  // Active matter: a WHISPER of self-propulsion keeps the system out of
+  // equilibrium so cells slowly crawl, rotate, merge and split forever — but
+  // kept small so the genuine Lenia self-organisation (sharp ring-shaped
+  // membranes) dominates instead of being sheared into churning foam.
+  v0: 0.05,               // self-propulsion speed (too high frays the ring cells)
+  turn: 0.25,             // per-step heading wander (radians)
+  noise: 0.003,           // small extra translational jitter (anti-freeze)
   maxDPR: 1.5,
   fps: 30,
 
   look: {
-    pointSize: 0.10,      // glow radius (big enough to fuse a cluster's particles
-                          // into one smooth, cohesive-looking cell)
-    gain: 0.24, gamma: 0.70, vignette: 0.12,   // static heat ramp (denser = hotter)
+    // Render particles as small, crisp dots so the ring/membrane structure of
+    // each cell is visible in space — NOT fused into a smooth blob field.
+    pointSize: 0.013,     // dot radius as a fraction of screen height
+    gain: 0.5, gamma: 0.85, vignette: 0.12,   // heat ramp (denser = hotter)
   },
 };
 
@@ -117,7 +119,7 @@ precision highp float;
 out vec4 o;
 void main(){
   vec2 d = gl_PointCoord - 0.5;
-  float v = exp(-dot(d, d) * 18.0);     // tighter gaussian splat (sharper)
+  float v = exp(-dot(d, d) * 30.0);     // tight gaussian splat — crisp particle dot
   o = vec4(v, 0.0, 0.0, 1.0);
 }`;
 
