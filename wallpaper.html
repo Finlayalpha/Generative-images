@@ -52,12 +52,15 @@ const CONFIG = {
   // void. Too sparse (the old 0.17) and U never reaches μ_g → no growth → a
   // non-interacting gas of drifting dots. We hit that density with a SMALL
   // world (cheap O(N) neighbour loop) rather than a huge particle count.
-  // More particles at a slightly higher density ⇒ finer-grained, FILLED cells
-  // whose membranes read as continuous lines rather than spaced-out dots. The
-  // ceiling here is performance: the neighbour loop is O(N · neighbours) on the
-  // CPU and we're 30fps-bound, so ~1500 is about as far as we push.
-  worldHeight: 30,        // world height in units; width follows the aspect ratio
-  nParticles: 1500,       // ⇒ density ≈ 0.9 /unit² → filled, continuous cells
+  // DENSITY MUST SIT JUST BELOW THE GROWTH PEAK μ_g (0.6). There, cohesion
+  // pulls particles into curved membranes/cells with void between — living
+  // structure. Push density ABOVE the peak (~0.9) and the growth gradient
+  // flips sign (anti-cohesion): particles spread to even spacing and FREEZE
+  // into a hexagonal crystal lattice — dead. Below (~0.17) → no cohesion → gas.
+  // So we hold ~0.6, and get visual CONTINUITY from the render (big soft
+  // splats below), not from cramming in more particles.
+  worldHeight: 32,        // world height in units; width follows the aspect ratio
+  nParticles: 1200,       // ⇒ density ≈ 0.6 /unit² → arcs & cells, not a crystal
   substeps: 1,            // sim steps per displayed frame
   dt: 0.1,
 
@@ -70,19 +73,23 @@ const CONFIG = {
   // equilibrium so cells slowly crawl, rotate, merge and split forever — but
   // kept small so the genuine Lenia self-organisation (sharp ring-shaped
   // membranes) dominates instead of being sheared into churning foam.
-  v0: 0.04,               // self-propulsion speed (too high frays the ring cells)
-  turn: 0.2,              // per-step heading wander (radians)
-  noise: 0.002,           // small extra translational jitter (anti-freeze)
+  // Moderate active matter keeps the soup PERMANENTLY out of equilibrium so it
+  // flows and morphs forever — strong enough to never crystallize/freeze, gentle
+  // enough that cohesion still wins locally and the membranes hold together.
+  v0: 0.09,               // self-propulsion speed (too high frays the cells)
+  turn: 0.3,              // per-step heading wander (radians)
+  noise: 0.003,           // small extra translational jitter (anti-freeze)
   maxDPR: 1.5,
   fps: 30,
 
   look: {
     // Render particles as small, crisp dots so the ring/membrane structure of
     // each cell is visible in space — NOT fused into a smooth blob field.
-    pointSize: 0.024,     // dot radius as a fraction of screen height (wide
-                          // enough to bridge the gap to the next particle so a
-                          // membrane reads as a continuous line, not dots)
-    gain: 0.32, gamma: 0.85, vignette: 0.12,  // heat ramp (denser = hotter)
+    pointSize: 0.05,      // big SOFT splat (fraction of screen height): each
+                          // particle's glow overlaps its neighbours so a chain
+                          // of particles fuses into one continuous membrane —
+                          // continuity from the render, structure from the sim.
+    gain: 0.16, gamma: 0.8, vignette: 0.12,   // heat ramp (denser = hotter)
   },
 };
 
@@ -130,7 +137,7 @@ precision highp float;
 out vec4 o;
 void main(){
   vec2 d = gl_PointCoord - 0.5;
-  float v = exp(-dot(d, d) * 20.0);     // soft gaussian splat — bleeds into neighbours
+  float v = exp(-dot(d, d) * 12.0);     // soft, wide gaussian — fuses neighbouring particles
   o = vec4(v, 0.0, 0.0, 1.0);
 }`;
 
