@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>SmoothLife — continuous Game of Life (GPU)</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  #fallback {
+    position: fixed; inset: 0; display: none; place-items: center;
+    color: #9aa; font: 14px/1.5 -apple-system, system-ui, sans-serif; text-align: center; padding: 2rem;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="fallback">This needs WebGL2.<br />Open in a recent Safari, Chrome, or Firefox.</div>
+
+<script>
+"use strict";
+/* ===========================================================================
+   SmoothLife — a discrete-cell, continuous-state Game of Life.
+
+   The sibling file (index.html) runs Particle Lenia, whose neighbour physics
+   is computed in JavaScript on the CPU every frame (an O(N) spatial-hash loop).
+   That is what eats CPU. This file trades that for a GRID, like Conway's Game
+   of Life — but with continuous cell values and smooth neighbourhoods, which is
+   the bridge to Lenia (SmoothLife, S. Rafler 2011, "Generalization of Conway's
+   Game of Life to a continuous domain").
+
+   The entire simulation lives in a fragment shader: each cell reads a ring of
+   neighbours from a texture and writes its next value. The CPU does essentially
+   nothing per frame — it issues two draw calls (step + display) and goes back
+   to sleep. So this is much cheaper on the CPU than the particle version, while
+   still showing emergent creatures (gliders) and continuous, non-freezing soup.
+
+   Per cell, each step integrates two smooth disks of the state field A:
+     m = mean of A over the INNER  disk  (radius ri)      "the cell itself"
+     n = mean of A over the OUTER  ring  (ri..ra)         "its neighbourhood"
+   then applies the smooth birth/death rule s(n,m) (sigmoids with thresholds
+   b1,b2 for birth, d1,d2 for survival) and steps the field toward it:
+     A ← clamp( A + dt·(2·s(n,m) − 1), 0, 1 )
+
+   Grid CA usually freezes into static spots/labyrinths. Two things keep this
+   one alive: (1) glider-friendly parameters that sustain travelling creatures,
+   and (2) a whisper of per-cell noise each step (anti-freeze), mirroring the
+   active-matter trick the particle version uses.
+   =========================================================================== */
+
+const CONFIG = {
+  // Simulation grid height in CELLS (width follows the screen aspect ratio).
+  // This is fixed and independent of screen resolution / DPR, so the GPU cost
+  // is constant and the CPU stays idle regardless of display size. The grid is
+  // upscaled to the screen with linear filtering for a soft look.
+  gridHeight: 240,
+
+  // SmoothLife neighbourhood radii, in cells. ra is the outer radius; the inner
+  // "self" disk is ri = ra/3 (Rafler's ratio). The convolution loop is
+  // (2·ra+1)² texel reads per cell — all on the GPU.
+  ra: 11,
+
+  // Glider-friendly transition parameters (Rafler's SmoothLifeL set). These
+  // sustain travelling creatures and a perpetually reorganizing soup rather
+  // than relaxing to static blobs.
+  b1: 0.257, b2: 0.336,     // birth   window on neighbourhood density n
+  d1: 0.365, d2: 0.549,     // survival window on neighbourhood density n
+  alpha_n: 0.028,           // sigmoid softness on n
+  alpha_m: 0.147,           // sigmoid softness on m (self) — blends birth/survival
+  dt: 0.16,                 // smooth-time step (smaller = smoother, slower)
+
+  noise: 0.006,             // per-cell jitter each step — keeps it from freezing
+  seedDisks: 60,            // random filled disks used to seed the soup
+  fps: 30,
+};
+
+/* ===========================================================================
+   WebGL plumbing
+   =========================================================================== */
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false,
+                                         powerPreference: 'low-power', premultipliedAlpha: false });
+if (!gl) { document.getElementById('fallback').style.display = 'grid'; throw new Error('WebGL2 unavailable'); }
+if (!gl.getExtension('EXT_color_buffer_float')) {
+  const f = document.getElementById('fallback');
+  f.style.display = 'grid';
+  f.textContent = "This GPU/browser can't render to float textures. Try a recent Safari/Chrome/Firefox.";
+  throw new Error('EXT_color_buffer_float unavailable');
+}
+
+function compile(t, s) {
+  const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh) + '\n' + s);
+  return sh;
+}
+function program(v, f) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, v));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, f));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  p._c = {}; p._u = n => (n in p._c) ? p._c[n] : (p._c[n] = gl.getUniformLocation(p, n));
+  return p;
+}
+
+// Fullscreen-triangle vertex shader (shared by the sim and display passes).
+const FS_TRI_V = `#version 300 es
+void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0,0.,1.); }`;
+
+// SmoothLife step. Reads the previous state texture, writes the next. The whole
+// of the physics is here; the CPU never touches a cell.
+const SIM_F = `#version 300 es
+precision highp float;
+out vec4 o;
+uniform sampler2D uState;
+uniform float uB1, uB2, uD1, uD2, uAlphaN, uAlphaM, uDt, uNoise, uTime;
+
+#define RA ${CONFIG.ra}
+const float ra = float(RA);
+const float ri = float(RA) / 3.0;
+
+// Logistic step with width 'ea' centred on 'a'.
+float sigma1(float x, float a, float ea){ return 1.0 / (1.0 + exp(-(x - a) * 4.0 / ea)); }
+// Band-pass: ~1 between a and b, ~0 outside.
+float sigma2(float x, float a, float b, float ea){ return sigma1(x, a, ea) * (1.0 - sigma1(x, b, ea)); }
+// Blend birth threshold (m≈0, empty self) toward survival threshold (m≈1, full self).
+float lerpm(float a, float b, float m, float em){ return a * (1.0 - sigma1(m, 0.5, em)) + b * sigma1(m, 0.5, em); }
+
+// Cheap hash noise for the anti-freeze jitter.
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+void main(){
+  ivec2 sz = textureSize(uState, 0);
+  ivec2 c  = ivec2(gl_FragCoord.xy);
+
+  float M = 0.0, m_area = 0.0;   // inner disk (self)
+  float N = 0.0, n_area = 0.0;   // outer ring (neighbourhood)
+  for (int dy = -RA; dy <= RA; dy++){
+    for (int dx = -RA; dx <= RA; dx++){
+      float r = sqrt(float(dx*dx + dy*dy));
+      if (r > ra + 0.5) continue;
+      // Anti-aliased disk memberships (soft 1-cell edges).
+      float diskI = 1.0 - smoothstep(ri - 0.5, ri + 0.5, r);   // inner disk
+      float diskO = 1.0 - smoothstep(ra - 0.5, ra + 0.5, r);   // full outer disk
+      float ring  = diskO - diskI;                              // the annulus
+      // Toroidal wrap so creatures glide off one edge and back on the other.
+      ivec2 p = ivec2((c.x + dx + sz.x * (RA/sz.x + 2)) % sz.x,
+                      (c.y + dy + sz.y * (RA/sz.y + 2)) % sz.y);
+      float a = texelFetch(uState, p, 0).r;
+      M += a * diskI; m_area += diskI;
+      N += a * ring;  n_area += ring;
+    }
+  }
+  float m = M / m_area;
+  float n = N / n_area;
+
+  // SmoothLife transition: survive if n in [d1,d2] (when self full), be born if
+  // n in [b1,b2] (when self empty); lerpm blends the two by m.
+  float s = sigma2(n, lerpm(uB1, uD1, m, uAlphaM), lerpm(uB2, uD2, m, uAlphaM), uAlphaN);
+
+  float a = texelFetch(uState, c, 0).r;
+  // Smooth-time integration toward the target state.
+  float next = a + uDt * (2.0 * s - 1.0);
+  // Whisper of noise so the lattice can never lock into a fixed point.
+  next += (hash(vec2(c) + uTime) - 0.5) * uNoise;
+  o = vec4(clamp(next, 0.0, 1.0), 0.0, 0.0, 1.0);
+}`;
+
+// Display pass: upscale the grid and apply an inferno heat ramp (matches the
+// sibling wallpaper's look). Linear filtering on the small grid gives the soft,
+// continuous appearance.
+const DISP_F = `#version 300 es
+precision highp float;
+out vec4 outColor;
+uniform sampler2D uState;
+uniform vec2 uRes;
+uniform float uVignette;
+vec3 heat(float t){
+  t = clamp(t, 0.0, 1.0);
+  const vec3 c0 = vec3(0.00, 0.00, 0.00);
+  const vec3 c1 = vec3(0.13, 0.05, 0.28);
+  const vec3 c2 = vec3(0.47, 0.11, 0.42);
+  const vec3 c3 = vec3(0.78, 0.20, 0.24);
+  const vec3 c4 = vec3(0.96, 0.49, 0.12);
+  const vec3 c5 = vec3(0.99, 0.81, 0.22);
+  const vec3 c6 = vec3(1.00, 1.00, 0.96);
+  if (t < 0.20) return mix(c0, c1, t / 0.20);
+  if (t < 0.40) return mix(c1, c2, (t - 0.20) / 0.20);
+  if (t < 0.60) return mix(c2, c3, (t - 0.40) / 0.20);
+  if (t < 0.78) return mix(c3, c4, (t - 0.60) / 0.18);
+  if (t < 0.91) return mix(c4, c5, (t - 0.78) / 0.13);
+  return mix(c5, c6, (t - 0.91) / 0.09);
+}
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes;
+  float d = texture(uState, uv).r;
+  vec3 col = heat(pow(d, 0.85));
+  vec2 q = uv - 0.5; col *= 1.0 - uVignette * dot(q, q) * 2.0;
+  outColor = vec4(max(col, 0.0), 1.0);
+}`;
+
+const progSim  = program(FS_TRI_V, SIM_F);
+const progDisp = program(FS_TRI_V, DISP_F);
+const triVao = gl.createVertexArray();   // empty VAO for fullscreen passes
+
+/* ===========================================================================
+   Ping-pong state textures (the grid) + framebuffers
+   =========================================================================== */
+let gridW, gridH;
+let tex = [null, null], fbo = [null, null], src = 0;
+
+function makeTex(w, h, data) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, w, h, 0, gl.RED, gl.FLOAT, data);
+  // LINEAR for the display upscale; the sim uses texelFetch which ignores this.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+
+// Seed the soup with random filled disks — reliably births gliders, unlike
+// pure white noise which tends to fizzle for these parameters.
+function seed() {
+  const a = new Float32Array(gridW * gridH);
+  const R = CONFIG.ra;
+  for (let k = 0; k < CONFIG.seedDisks; k++) {
+    const cx = Math.random() * gridW, cy = Math.random() * gridH;
+    const rr = R * (0.6 + Math.random() * 1.2);
+    const x0 = Math.floor(cx - rr), x1 = Math.ceil(cx + rr);
+    const y0 = Math.floor(cy - rr), y1 = Math.ceil(cy + rr);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const dx = x - cx, dy = y - cy;
+      if (dx*dx + dy*dy > rr*rr) continue;
+      const gx = ((x % gridW) + gridW) % gridW, gy = ((y % gridH) + gridH) % gridH;
+      a[gx + gy * gridW] = 1.0;
+    }
+  }
+  return a;
+}
+
+function allocate() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  canvas.width  = Math.max(2, Math.floor(window.innerWidth  * dpr));
+  canvas.height = Math.max(2, Math.floor(window.innerHeight * dpr));
+
+  gridH = CONFIG.gridHeight;
+  gridW = Math.max(1, Math.round(gridH * (canvas.width / canvas.height)));
+
+  for (const t of tex) if (t) gl.deleteTexture(t);
+  for (const f of fbo) if (f) gl.deleteFramebuffer(f);
+  const init = seed();
+  tex[0] = makeTex(gridW, gridH, init);
+  tex[1] = makeTex(gridW, gridH, null);
+  for (let i = 0; i < 2; i++) {
+    fbo[i] = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo[i]);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex[i], 0);
+  }
+  src = 0;
+}
+
+/* ===========================================================================
+   Frame: one GPU sim step (ping-pong) + one display blit. CPU work ≈ nil.
+   =========================================================================== */
+function step(time) {
+  const dst = 1 - src;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo[dst]);
+  gl.viewport(0, 0, gridW, gridH);
+  gl.useProgram(progSim);
+  gl.bindVertexArray(triVao);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[src]);
+  gl.uniform1i(progSim._u('uState'), 0);
+  gl.uniform1f(progSim._u('uB1'), CONFIG.b1);
+  gl.uniform1f(progSim._u('uB2'), CONFIG.b2);
+  gl.uniform1f(progSim._u('uD1'), CONFIG.d1);
+  gl.uniform1f(progSim._u('uD2'), CONFIG.d2);
+  gl.uniform1f(progSim._u('uAlphaN'), CONFIG.alpha_n);
+  gl.uniform1f(progSim._u('uAlphaM'), CONFIG.alpha_m);
+  gl.uniform1f(progSim._u('uDt'), CONFIG.dt);
+  gl.uniform1f(progSim._u('uNoise'), CONFIG.noise);
+  gl.uniform1f(progSim._u('uTime'), time);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  src = dst;
+}
+
+function display() {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(progDisp);
+  gl.bindVertexArray(triVao);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[src]);
+  gl.uniform1i(progDisp._u('uState'), 0);
+  gl.uniform2f(progDisp._u('uRes'), canvas.width, canvas.height);
+  gl.uniform1f(progDisp._u('uVignette'), 0.12);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+/* ===========================================================================
+   Loop
+   =========================================================================== */
+let running = true, lastFrame = 0, t = 0;
+function frame(tMs) {
+  if (!running) return;
+  requestAnimationFrame(frame);
+  if (tMs - lastFrame < 1000 / CONFIG.fps) return;
+  lastFrame = tMs;
+  t += 1.0;
+  step(t);
+  display();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) running = false;
+  else if (!running) { running = true; lastFrame = 0; requestAnimationFrame(frame); }
+});
+// Click / tap to reseed the soup.
+canvas.addEventListener('pointerdown', () => {
+  gl.bindTexture(gl.TEXTURE_2D, tex[src]);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gridW, gridH, gl.RED, gl.FLOAT, seed());
+});
+let resizeTimer = null;
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(allocate, 200); });
+
+allocate();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
