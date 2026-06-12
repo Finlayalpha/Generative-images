@@ -67,23 +67,19 @@ const CONFIG = {
   maxDPR: 2.0,       // render the colour pass at up to 2× device pixels (sharper
                      //   edges; the sim grid is unaffected and stays cheap)
 
-  // Gray–Scott diffusion + timestep (classic Karl-Sims values; stable for the
-  // 9-point Laplacian with Dᵤ·dt < 0.25).
+  // Gray–Scott diffusion + timestep. Established values from the widely-used
+  // pmneila / Karl-Sims WebGL setups: 2:1 diffusion ratio with the 9-point
+  // Laplacian and dt=1 (stable while Dᵤ·dt < 0.25). The actual feed/kill (F,k)
+  // presets live in regimePath() in the shader and are the documented dynamic
+  // regimes (worms / solitons / mitosis / u-skate gliders).
   Du: 0.16, Dv: 0.08, dt: 1.0,
 
-  // Feed (F) and kill (k) rates are sampled from a smooth, isotropic field that
-  // DRIFTS over space *and time* (see fbm() in the shader) instead of a fixed
-  // corner-biased gradient. So the regime map is fluid: a patch of screen flows
-  // through spots → worms → mitosis → chaos → quiet → back again as the field
-  // moves over it, with no preferred direction. Fmin/Fmax and kmin/kmax set the
-  // range the field roams across (the valid/interesting Gray–Scott rectangle).
-  Fmin: 0.010, Fmax: 0.046,
-  kmin: 0.045, kmax: 0.065,
+  // A single smooth, isotropic field (fbm in the shader) DRIFTS over space and
+  // time, choosing where along the dynamic regime arc each cell sits. So the
+  // regime map is fluid — regions migrate and morph — while staying on live
+  // regimes everywhere (no dead patches, no axis bias).
   fieldScale: 2.6,   // larger = smaller regime blobs (more of them on screen)
   fieldDrift: 0.10,  // how fast the regime field flows (lower = more languid)
-  regimeSwirl: 0.20, // curl-noise advection: warps the regime field along a
-                     //   divergence-free flow so regions SWIRL like weather
-                     //   fronts instead of just morphing in place. 0 = off.
 
   noise: 0.0020,   // tiny jitter into V each step — anti-freeze + lets dead
                    //   regions re-ignite when a living regime drifts back over them
@@ -130,28 +126,23 @@ precision highp float;
 out vec4 o;
 uniform sampler2D uState;
 uniform float uDu, uDv, uDt, uNoise, uStep;
-uniform float uFmin, uFmax, uKmin, uKmax;
-uniform float uTime, uSeed, uFieldScale, uFieldDrift, uSwirl;
+uniform float uTime, uSeed, uFieldScale, uFieldDrift;
 
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
-// Divergence-free curl-noise velocity field. The curl of a scalar potential is
-// automatically incompressible — pure rotation, no sources/sinks — so warping
-// the regime sampling position by it makes the regions SWIRL and shear like
-// fluid/weather fronts rather than just fading in place. Evolves with time so
-// the flow itself rolls over.
-vec2 flow(vec2 p, float t){
-  vec2 v = vec2(0.0);
-  for (int i = 0; i < 3; i++){
-    float fi = float(i);
-    float ang = 1.7 + fi * 2.27;
-    vec2 d = vec2(cos(ang), sin(ang));
-    float f = 1.2 * pow(1.9, fi);
-    float s = 0.09 * (1.0 + 0.5 * fi);
-    float c = cos(dot(p, d) * f + t * s);
-    v += vec2(d.y, -d.x) * (f * c) * pow(0.55, fi);   // perp(∇potential) = curl
-  }
-  return v;
+// Feed/kill presets along the documented DYNAMIC tongue of Gray–Scott (Pearson
+// 1993 / Munafo). The interesting "creature" behaviours live on a narrow curved
+// arc in (F,k) space — NOT a rectangle — so we vary a single parameter t that
+// walks along that arc. Every value of t is therefore a known live regime, which
+// kills the dead/static patches that independent F,k sampling produced.
+//   worms → solitons → mitosis → u-skate gliders   (all perpetually moving)
+vec2 regimePath(float t){
+  t = clamp(t, 0.0, 1.0) * 3.0;
+  vec2 a, b; float f;
+  if      (t < 1.0) { a = vec2(0.026, 0.0580); b = vec2(0.030, 0.0620); f = t;        }
+  else if (t < 2.0) { a = vec2(0.030, 0.0620); b = vec2(0.038, 0.0635); f = t - 1.0;  }
+  else              { a = vec2(0.038, 0.0635); b = vec2(0.058, 0.0610); f = t - 2.0;  }
+  return mix(a, b, smoothstep(0.0, 1.0, f));   // (F, k)
 }
 
 // Smooth, isotropic, slowly-drifting scalar field in ~[0,1]. Built from a few
@@ -190,16 +181,15 @@ void main(){
   vec2 lap = -cc + 0.2*(l+r+u+d) + 0.05*(ul+ur+dl+dr);
 
   float U = cc.r, V = cc.g;
-  // Fluid feed/kill: sample F and k from the drifting isotropic field so the
-  // regimes flow across the screen and morph over time (not a fixed gradient).
-  // Isotropic units (divide by height) so blobs are round, not stretched.
+  // Fluid feed/kill: a single drifting isotropic field picks WHERE along the
+  // dynamic regime arc each cell sits, so the screen spans worms → solitons →
+  // mitosis → gliders, the regions migrate and morph over time, and every cell
+  // is always on a live regime (no dead/static patches). Isotropic units
+  // (divide by height) so the regime blobs are round, not stretched.
   vec2 pos = (vec2(c) + 0.5) / float(sz.y);
-  // Advect the sampling position along the curl-noise flow → swirling regimes.
-  // F and k share the same warp so a region moves as one coherent body.
-  vec2 wpos = pos + uSwirl * flow(pos, uTime);
-  float regime = fbm(wpos, uTime, uSeed + 0.37);   // 0..1, monotonic in k
-  float F = mix(uFmin, uFmax, fbm(wpos, uTime, uSeed));
-  float k = mix(uKmin, uKmax, regime);
+  float regime = fbm(pos, uTime, uSeed);   // 0..1, position along the arc
+  vec2 Fk = regimePath(regime);
+  float F = Fk.x, k = Fk.y;
 
   float uvv = U * V * V;
   float dV  = uDt * (uDv * lap.g + uvv - (F + k) * V);   // deterministic ∂V/∂t·dt
@@ -351,11 +341,6 @@ function step(stepCount, timeSec) {
   gl.uniform1f(progSim._u('uSeed'), SEED);
   gl.uniform1f(progSim._u('uFieldScale'), CONFIG.fieldScale);
   gl.uniform1f(progSim._u('uFieldDrift'), CONFIG.fieldDrift);
-  gl.uniform1f(progSim._u('uSwirl'), CONFIG.regimeSwirl);
-  gl.uniform1f(progSim._u('uFmin'), CONFIG.Fmin);
-  gl.uniform1f(progSim._u('uFmax'), CONFIG.Fmax);
-  gl.uniform1f(progSim._u('uKmin'), CONFIG.kmin);
-  gl.uniform1f(progSim._u('uKmax'), CONFIG.kmax);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   src = dst;
 }
