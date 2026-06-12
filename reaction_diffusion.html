@@ -84,7 +84,8 @@ const CONFIG = {
   noise: 0.0020,   // tiny jitter into V each step — anti-freeze + lets dead
                    //   regions re-ignite when a living regime drifts back over them
   seedDisks: 80,   // random V blobs to ignite the reaction
-  substeps: 8,     // sim steps per displayed frame (RD is cheap; this animates it)
+  substeps: 12,    // sim steps per displayed frame — more = faster evolution
+                   //   (RD is cheap, so this is nearly free)
   fps: 30,
 };
 
@@ -133,15 +134,16 @@ float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); 
 // Feed/kill presets along the documented DYNAMIC tongue of Gray–Scott (Pearson
 // 1993 / Munafo). The interesting "creature" behaviours live on a narrow curved
 // arc in (F,k) space — NOT a rectangle — so we vary a single parameter t that
-// walks along that arc. Every value of t is therefore a known live regime, which
-// kills the dead/static patches that independent F,k sampling produced.
-//   worms → solitons → mitosis → u-skate gliders   (all perpetually moving)
+// walks along that arc. Every value of t is therefore a known live regime.
+// We sit on the DENSE, fast end of the tongue: low-k chaos/labyrinth → worms →
+// maze → dividing worms. (Higher k — solitons/mitosis/u-skate gliders — is
+// genuinely sparse and slow, so we avoid it here.)
 vec2 regimePath(float t){
   t = clamp(t, 0.0, 1.0) * 3.0;
   vec2 a, b; float f;
-  if      (t < 1.0) { a = vec2(0.026, 0.0580); b = vec2(0.030, 0.0620); f = t;        }
-  else if (t < 2.0) { a = vec2(0.030, 0.0620); b = vec2(0.038, 0.0635); f = t - 1.0;  }
-  else              { a = vec2(0.038, 0.0635); b = vec2(0.058, 0.0610); f = t - 2.0;  }
+  if      (t < 1.0) { a = vec2(0.024, 0.0530); b = vec2(0.030, 0.0560); f = t;        }
+  else if (t < 2.0) { a = vec2(0.030, 0.0560); b = vec2(0.035, 0.0580); f = t - 1.0;  }
+  else              { a = vec2(0.035, 0.0580); b = vec2(0.042, 0.0600); f = t - 2.0;  }
   return mix(a, b, smoothstep(0.0, 1.0, f));   // (F, k)
 }
 
