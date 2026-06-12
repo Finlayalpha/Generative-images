@@ -52,15 +52,13 @@ const CONFIG = {
   // void. Too sparse (the old 0.17) and U never reaches μ_g → no growth → a
   // non-interacting gas of drifting dots. We hit that density with a SMALL
   // world (cheap O(N) neighbour loop) rather than a huge particle count.
-  // DENSITY MUST SIT JUST BELOW THE GROWTH PEAK μ_g (0.6). There, cohesion
-  // pulls particles into curved membranes/cells with void between — living
-  // structure. Push density ABOVE the peak (~0.9) and the growth gradient
-  // flips sign (anti-cohesion): particles spread to even spacing and FREEZE
-  // into a hexagonal crystal lattice — dead. Below (~0.17) → no cohesion → gas.
-  // So we hold ~0.6, and get visual CONTINUITY from the render (big soft
-  // splats below), not from cramming in more particles.
+  // Density tunes the MORPHOLOGY: right at μ_g (~0.6/unit²) particles link into
+  // one connected, percolating LABYRINTH — beautiful but topologically locked,
+  // so it only creeps. Drop a notch below (~0.46) and the maze breaks into
+  // DISCRETE cells: disconnected blobs are mobile, so they swim, collide, fuse
+  // and split — emergent "life". Lower still (~0.17) loses cohesion → gas.
   worldHeight: 32,        // world height in units; width follows the aspect ratio
-  nParticles: 1200,       // ⇒ density ≈ 0.6 /unit² → arcs & cells, not a crystal
+  nParticles: 900,        // ⇒ density ≈ 0.46 /unit² → discrete, swimming cells
   substeps: 1,            // sim steps per displayed frame
   dt: 0.1,
 
@@ -76,9 +74,9 @@ const CONFIG = {
   // Moderate active matter keeps the soup PERMANENTLY out of equilibrium so it
   // flows and morphs forever — strong enough to never crystallize/freeze, gentle
   // enough that cohesion still wins locally and the membranes hold together.
-  v0: 0.09,               // self-propulsion speed (too high frays the cells)
-  turn: 0.3,              // per-step heading wander (radians)
-  noise: 0.003,           // small extra translational jitter (anti-freeze)
+  v0: 0.14,               // self-propulsion speed (drives the cells to swim)
+  turn: 0.45,             // per-step heading wander (radians)
+  noise: 0.004,           // small extra translational jitter (anti-freeze)
   maxDPR: 1.5,
   fps: 30,
 
