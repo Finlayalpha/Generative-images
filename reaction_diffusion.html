@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>SmoothLife — continuous Game of Life (GPU)</title>
+<title>Reaction–Diffusion — continuous living cells (GPU)</title>
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
@@ -21,57 +21,59 @@
 <script>
 "use strict";
 /* ===========================================================================
-   SmoothLife — a discrete-cell, continuous-state Game of Life.
+   Reaction–Diffusion (Gray–Scott) — discrete cells, continuous state, and it
+   NEVER freezes.
 
-   The sibling file (index.html) runs Particle Lenia, whose neighbour physics
-   is computed in JavaScript on the CPU every frame (an O(N) spatial-hash loop).
-   That is what eats CPU. This file trades that for a GRID, like Conway's Game
-   of Life — but with continuous cell values and smooth neighbourhoods, which is
-   the bridge to Lenia (SmoothLife, S. Rafler 2011, "Generalization of Conway's
-   Game of Life to a continuous domain").
+   The journey here, recorded so the next reader doesn't repeat it:
 
-   The entire simulation lives in a fragment shader: each cell reads a ring of
-   neighbours from a texture and writes its next value. The CPU does essentially
-   nothing per frame — it issues two draw calls (step + display) and goes back
-   to sleep. So this is much cheaper on the CPU than the particle version, while
-   still showing emergent creatures (gliders) and continuous, non-freezing soup.
+     index.html        Particle Lenia. Beautiful, but the physics runs in JS on
+                       the CPU every frame — exactly the cost we wanted to cut.
+     (SmoothLife try)  Grid-based SmoothLife on the GPU. CPU went idle as hoped,
+                       but it RELAXED INTO A STATIC TURING PATTERN (spots /
+                       labyrinths) within seconds. This is structural, not a
+                       tuning bug: SmoothLife / grid-Lenia are *relaxational* —
+                       every cell descends to a steady value and the lattice
+                       locks into a fixed point. The repo README warns of exactly
+                       this. Sprinkling noise only dithers a dead pattern.
 
-   Per cell, each step integrates two smooth disks of the state field A:
-     m = mean of A over the INNER  disk  (radius ri)      "the cell itself"
-     n = mean of A over the OUTER  ring  (ri..ra)         "its neighbourhood"
-   then applies the smooth birth/death rule s(n,m) (sigmoids with thresholds
-   b1,b2 for birth, d1,d2 for survival) and steps the field toward it:
-     A ← clamp( A + dt·(2·s(n,m) − 1), 0, 1 )
+   The particle version dodged freezing with ACTIVE MATTER (self-propulsion ⇒
+   no equilibrium exists). The grid analogue is reaction–diffusion: two chemicals
+   U and V diffuse and react (U + 2V → 3V, plus feed/kill). It is an open,
+   driven system — it does not relax to a fixed point but sustains travelling,
+   splitting, branching localized structures ("creatures"). It is also far
+   CHEAPER than SmoothLife: a 9-tap Laplacian per cell instead of a ~500-tap
+   convolution. The entire simulation is a fragment shader; the CPU just issues
+   draw calls and sleeps.
 
-   Grid CA usually freezes into static spots/labyrinths. Two things keep this
-   one alive: (1) glider-friendly parameters that sustain travelling creatures,
-   and (2) a whisper of per-cell noise each step (anti-freeze), mirroring the
-   active-matter trick the particle version uses.
+     ∂U/∂t = Dᵤ·∇²U − U·V² + F·(1 − U)        (feed U at rate F)
+     ∂V/∂t = D_v·∇²V + U·V² − (F + k)·V        (kill V at rate F+k)
+
+   To GUARANTEE it never globally settles, F and k vary across the grid: every
+   region sits in a different behavioural regime (spots, worms, mitosis, chaos),
+   so the boundaries between regimes are perpetually unstable and churn forever.
+   A whisper of noise keeps any locally-quiet patch from perfectly freezing.
    =========================================================================== */
 
 const CONFIG = {
-  // Simulation grid height in CELLS (width follows the screen aspect ratio).
-  // This is fixed and independent of screen resolution / DPR, so the GPU cost
-  // is constant and the CPU stays idle regardless of display size. The grid is
-  // upscaled to the screen with linear filtering for a soft look.
-  gridHeight: 240,
+  // Simulation grid height in CELLS (width follows aspect). Fixed and
+  // independent of screen resolution, so GPU cost is constant and the CPU
+  // stays idle. Upscaled to the screen with linear filtering.
+  gridHeight: 256,
 
-  // SmoothLife neighbourhood radii, in cells. ra is the outer radius; the inner
-  // "self" disk is ri = ra/3 (Rafler's ratio). The convolution loop is
-  // (2·ra+1)² texel reads per cell — all on the GPU.
-  ra: 11,
+  // Gray–Scott diffusion + timestep (classic Karl-Sims values; stable for the
+  // 9-point Laplacian with Dᵤ·dt < 0.25).
+  Du: 0.16, Dv: 0.08, dt: 1.0,
 
-  // Glider-friendly transition parameters (Rafler's SmoothLifeL set). These
-  // sustain travelling creatures and a perpetually reorganizing soup rather
-  // than relaxing to static blobs.
-  b1: 0.257, b2: 0.336,     // birth   window on neighbourhood density n
-  d1: 0.365, d2: 0.549,     // survival window on neighbourhood density n
-  alpha_n: 0.028,           // sigmoid softness on n
-  alpha_m: 0.147,           // sigmoid softness on m (self) — blends birth/survival
-  dt: 0.16,                 // smooth-time step (smaller = smoother, slower)
+  // Feed (F) and kill (k) rates vary across the grid so the screen spans the
+  // whole Pearson zoo at once — spots, worms, loops, mitosis, spatiotemporal
+  // chaos — and the interfaces between regimes never stop moving.
+  //   F: top → bottom,  k: left → right.
+  Fmin: 0.012, Fmax: 0.045,
+  kmin: 0.045, kmax: 0.065,
 
-  noise: 0.006,             // per-cell jitter each step — keeps it from freezing
-  seedDisks: 60,            // random filled disks used to seed the soup
+  noise: 0.0015,   // tiny jitter into V each step — anti-freeze insurance
+  seedDisks: 80,   // random V blobs to ignite the reaction
+  substeps: 8,     // sim steps per displayed frame (RD is cheap; this animates it)
   fps: 30,
 };
 
@@ -104,72 +106,44 @@ function program(v, f) {
   return p;
 }
 
-// Fullscreen-triangle vertex shader (shared by the sim and display passes).
 const FS_TRI_V = `#version 300 es
 void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0,0.,1.); }`;
 
-// SmoothLife step. Reads the previous state texture, writes the next. The whole
-// of the physics is here; the CPU never touches a cell.
+// Gray–Scott step. Reads {U,V} from RG of the previous texture, writes the next.
 const SIM_F = `#version 300 es
 precision highp float;
 out vec4 o;
 uniform sampler2D uState;
-uniform float uB1, uB2, uD1, uD2, uAlphaN, uAlphaM, uDt, uNoise, uTime;
+uniform float uDu, uDv, uDt, uNoise, uTime;
+uniform float uFmin, uFmax, uKmin, uKmax;
 
-#define RA ${CONFIG.ra}
-const float ra = float(RA);
-const float ri = float(RA) / 3.0;
-
-// Logistic step with width 'ea' centred on 'a'.
-float sigma1(float x, float a, float ea){ return 1.0 / (1.0 + exp(-(x - a) * 4.0 / ea)); }
-// Band-pass: ~1 between a and b, ~0 outside.
-float sigma2(float x, float a, float b, float ea){ return sigma1(x, a, ea) * (1.0 - sigma1(x, b, ea)); }
-// Blend birth threshold (m≈0, empty self) toward survival threshold (m≈1, full self).
-float lerpm(float a, float b, float m, float em){ return a * (1.0 - sigma1(m, 0.5, em)) + b * sigma1(m, 0.5, em); }
-
-// Cheap hash noise for the anti-freeze jitter.
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
 void main(){
   ivec2 sz = textureSize(uState, 0);
   ivec2 c  = ivec2(gl_FragCoord.xy);
+  // Toroidal neighbour fetch.
+  #define S(dx,dy) texelFetch(uState, ivec2((c.x+(dx)+sz.x)%sz.x, (c.y+(dy)+sz.y)%sz.y), 0).rg
+  vec2 cc = S(0,0);
+  vec2 l = S(-1,0), r = S(1,0), d = S(0,-1), u = S(0,1);
+  vec2 ul = S(-1,1), ur = S(1,1), dl = S(-1,-1), dr = S(1,-1);
+  // 9-point isotropic Laplacian (weights sum to 0).
+  vec2 lap = -cc + 0.2*(l+r+u+d) + 0.05*(ul+ur+dl+dr);
 
-  float M = 0.0, m_area = 0.0;   // inner disk (self)
-  float N = 0.0, n_area = 0.0;   // outer ring (neighbourhood)
-  for (int dy = -RA; dy <= RA; dy++){
-    for (int dx = -RA; dx <= RA; dx++){
-      float r = sqrt(float(dx*dx + dy*dy));
-      if (r > ra + 0.5) continue;
-      // Anti-aliased disk memberships (soft 1-cell edges).
-      float diskI = 1.0 - smoothstep(ri - 0.5, ri + 0.5, r);   // inner disk
-      float diskO = 1.0 - smoothstep(ra - 0.5, ra + 0.5, r);   // full outer disk
-      float ring  = diskO - diskI;                              // the annulus
-      // Toroidal wrap so creatures glide off one edge and back on the other.
-      ivec2 p = ivec2((c.x + dx + sz.x * (RA/sz.x + 2)) % sz.x,
-                      (c.y + dy + sz.y * (RA/sz.y + 2)) % sz.y);
-      float a = texelFetch(uState, p, 0).r;
-      M += a * diskI; m_area += diskI;
-      N += a * ring;  n_area += ring;
-    }
-  }
-  float m = M / m_area;
-  float n = N / n_area;
+  float U = cc.r, V = cc.g;
+  // Spatially-varying feed/kill: sweep the whole Pearson parameter map.
+  vec2 nuv = (vec2(c) + 0.5) / vec2(sz);
+  float F = mix(uFmin, uFmax, nuv.y);
+  float k = mix(uKmin, uKmax, nuv.x);
 
-  // SmoothLife transition: survive if n in [d1,d2] (when self full), be born if
-  // n in [b1,b2] (when self empty); lerpm blends the two by m.
-  float s = sigma2(n, lerpm(uB1, uD1, m, uAlphaM), lerpm(uB2, uD2, m, uAlphaM), uAlphaN);
-
-  float a = texelFetch(uState, c, 0).r;
-  // Smooth-time integration toward the target state.
-  float next = a + uDt * (2.0 * s - 1.0);
-  // Whisper of noise so the lattice can never lock into a fixed point.
-  next += (hash(vec2(c) + uTime) - 0.5) * uNoise;
-  o = vec4(clamp(next, 0.0, 1.0), 0.0, 0.0, 1.0);
+  float uvv = U * V * V;
+  float nU = U + uDt * (uDu * lap.r - uvv + F * (1.0 - U));
+  float nV = V + uDt * (uDv * lap.g + uvv - (F + k) * V);
+  nV += (hash(vec2(c) + uTime) - 0.5) * uNoise;   // anti-freeze whisper
+  o = vec4(clamp(nU, 0.0, 1.0), clamp(nV, 0.0, 1.0), 0.0, 1.0);
 }`;
 
-// Display pass: upscale the grid and apply an inferno heat ramp (matches the
-// sibling wallpaper's look). Linear filtering on the small grid gives the soft,
-// continuous appearance.
+// Display: upscale and heat-map the V chemical (matches the sibling wallpaper).
 const DISP_F = `#version 300 es
 precision highp float;
 out vec4 outColor;
@@ -194,18 +168,18 @@ vec3 heat(float t){
 }
 void main(){
   vec2 uv = gl_FragCoord.xy / uRes;
-  float d = texture(uState, uv).r;
-  vec3 col = heat(pow(d, 0.85));
+  float v = texture(uState, uv).g;
+  vec3 col = heat(pow(clamp(v * 2.4, 0.0, 1.0), 0.8));
   vec2 q = uv - 0.5; col *= 1.0 - uVignette * dot(q, q) * 2.0;
   outColor = vec4(max(col, 0.0), 1.0);
 }`;
 
 const progSim  = program(FS_TRI_V, SIM_F);
 const progDisp = program(FS_TRI_V, DISP_F);
-const triVao = gl.createVertexArray();   // empty VAO for fullscreen passes
+const triVao = gl.createVertexArray();
 
 /* ===========================================================================
-   Ping-pong state textures (the grid) + framebuffers
+   Ping-pong state textures (RG = {U, V}) + framebuffers
    =========================================================================== */
 let gridW, gridH;
 let tex = [null, null], fbo = [null, null], src = 0;
@@ -213,8 +187,7 @@ let tex = [null, null], fbo = [null, null], src = 0;
 function makeTex(w, h, data) {
   const t = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, t);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, w, h, 0, gl.RED, gl.FLOAT, data);
-  // LINEAR for the display upscale; the sim uses texelFetch which ignores this.
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, w, h, 0, gl.RG, gl.FLOAT, data);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -222,21 +195,21 @@ function makeTex(w, h, data) {
   return t;
 }
 
-// Seed the soup with random filled disks — reliably births gliders, unlike
-// pure white noise which tends to fizzle for these parameters.
+// Seed: U=1, V=0 everywhere, then random blobs of V to ignite the reaction.
 function seed() {
-  const a = new Float32Array(gridW * gridH);
-  const R = CONFIG.ra;
-  for (let k = 0; k < CONFIG.seedDisks; k++) {
+  const a = new Float32Array(gridW * gridH * 2);
+  for (let i = 0; i < gridW * gridH; i++) { a[i*2] = 1.0; a[i*2+1] = 0.0; }
+  for (let d = 0; d < CONFIG.seedDisks; d++) {
     const cx = Math.random() * gridW, cy = Math.random() * gridH;
-    const rr = R * (0.6 + Math.random() * 1.2);
+    const rr = 3 + Math.random() * 7;
     const x0 = Math.floor(cx - rr), x1 = Math.ceil(cx + rr);
     const y0 = Math.floor(cy - rr), y1 = Math.ceil(cy + rr);
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
       const dx = x - cx, dy = y - cy;
       if (dx*dx + dy*dy > rr*rr) continue;
       const gx = ((x % gridW) + gridW) % gridW, gy = ((y % gridH) + gridH) % gridH;
-      a[gx + gy * gridW] = 1.0;
+      const idx = (gx + gy * gridW) * 2;
+      a[idx] = 0.5; a[idx+1] = 0.25;
     }
   }
   return a;
@@ -252,8 +225,7 @@ function allocate() {
 
   for (const t of tex) if (t) gl.deleteTexture(t);
   for (const f of fbo) if (f) gl.deleteFramebuffer(f);
-  const init = seed();
-  tex[0] = makeTex(gridW, gridH, init);
+  tex[0] = makeTex(gridW, gridH, seed());
   tex[1] = makeTex(gridW, gridH, null);
   for (let i = 0; i < 2; i++) {
     fbo[i] = gl.createFramebuffer();
@@ -264,7 +236,7 @@ function allocate() {
 }
 
 /* ===========================================================================
-   Frame: one GPU sim step (ping-pong) + one display blit. CPU work ≈ nil.
+   Frame: a few GPU sim steps (ping-pong) + one display blit. CPU work ≈ nil.
    =========================================================================== */
 function step(time) {
   const dst = 1 - src;
@@ -274,15 +246,15 @@ function step(time) {
   gl.bindVertexArray(triVao);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[src]);
   gl.uniform1i(progSim._u('uState'), 0);
-  gl.uniform1f(progSim._u('uB1'), CONFIG.b1);
-  gl.uniform1f(progSim._u('uB2'), CONFIG.b2);
-  gl.uniform1f(progSim._u('uD1'), CONFIG.d1);
-  gl.uniform1f(progSim._u('uD2'), CONFIG.d2);
-  gl.uniform1f(progSim._u('uAlphaN'), CONFIG.alpha_n);
-  gl.uniform1f(progSim._u('uAlphaM'), CONFIG.alpha_m);
+  gl.uniform1f(progSim._u('uDu'), CONFIG.Du);
+  gl.uniform1f(progSim._u('uDv'), CONFIG.Dv);
   gl.uniform1f(progSim._u('uDt'), CONFIG.dt);
   gl.uniform1f(progSim._u('uNoise'), CONFIG.noise);
   gl.uniform1f(progSim._u('uTime'), time);
+  gl.uniform1f(progSim._u('uFmin'), CONFIG.Fmin);
+  gl.uniform1f(progSim._u('uFmax'), CONFIG.Fmax);
+  gl.uniform1f(progSim._u('uKmin'), CONFIG.kmin);
+  gl.uniform1f(progSim._u('uKmax'), CONFIG.kmax);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   src = dst;
 }
@@ -308,8 +280,7 @@ function frame(tMs) {
   requestAnimationFrame(frame);
   if (tMs - lastFrame < 1000 / CONFIG.fps) return;
   lastFrame = tMs;
-  t += 1.0;
-  step(t);
+  for (let s = 0; s < CONFIG.substeps; s++) { t += 1.0; step(t); }
   display();
 }
 
@@ -317,10 +288,10 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) running = false;
   else if (!running) { running = true; lastFrame = 0; requestAnimationFrame(frame); }
 });
-// Click / tap to reseed the soup.
+// Click / tap to reseed.
 canvas.addEventListener('pointerdown', () => {
   gl.bindTexture(gl.TEXTURE_2D, tex[src]);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gridW, gridH, gl.RED, gl.FLOAT, seed());
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gridW, gridH, gl.RG, gl.FLOAT, seed());
 });
 let resizeTimer = null;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(allocate, 200); });
