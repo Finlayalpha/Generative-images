@@ -57,8 +57,10 @@
 const CONFIG = {
   // Simulation grid height in CELLS (width follows aspect). Fixed and
   // independent of screen resolution, so GPU cost is constant and the CPU
-  // stays idle. Upscaled to the screen with linear filtering.
-  gridHeight: 256,
+  // stays idle. Upscaled to the screen with linear filtering. RD is cheap
+  // (a 9-tap Laplacian per cell), so this can go high — finer, more numerous
+  // creatures. Raise further (e.g. 640) if your GPU has headroom.
+  gridHeight: 448,
 
   // Gray–Scott diffusion + timestep (classic Karl-Sims values; stable for the
   // 9-point Laplacian with Dᵤ·dt < 0.25).
