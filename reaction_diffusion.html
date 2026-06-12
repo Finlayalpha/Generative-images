@@ -63,7 +63,9 @@ const CONFIG = {
   // shrinks each creature on screen; to keep big creatures at high detail,
   // raise this AND scale Du/Dv up together (and add substeps to stay stable,
   // Du·dt < 0.25). 768–1024 is fine on a desktop GPU.
-  gridHeight: 512,
+  gridHeight: 720,
+  maxDPR: 2.0,       // render the colour pass at up to 2× device pixels (sharper
+                     //   edges; the sim grid is unaffected and stays cheap)
 
   // Gray–Scott diffusion + timestep (classic Karl-Sims values; stable for the
   // 9-point Laplacian with Dᵤ·dt < 0.25).
@@ -79,6 +81,9 @@ const CONFIG = {
   kmin: 0.045, kmax: 0.065,
   fieldScale: 2.6,   // larger = smaller regime blobs (more of them on screen)
   fieldDrift: 0.10,  // how fast the regime field flows (lower = more languid)
+  regimeSwirl: 0.20, // curl-noise advection: warps the regime field along a
+                     //   divergence-free flow so regions SWIRL like weather
+                     //   fronts instead of just morphing in place. 0 = off.
 
   noise: 0.0020,   // tiny jitter into V each step — anti-freeze + lets dead
                    //   regions re-ignite when a living regime drifts back over them
@@ -126,9 +131,28 @@ out vec4 o;
 uniform sampler2D uState;
 uniform float uDu, uDv, uDt, uNoise, uStep;
 uniform float uFmin, uFmax, uKmin, uKmax;
-uniform float uTime, uSeed, uFieldScale, uFieldDrift;
+uniform float uTime, uSeed, uFieldScale, uFieldDrift, uSwirl;
 
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+// Divergence-free curl-noise velocity field. The curl of a scalar potential is
+// automatically incompressible — pure rotation, no sources/sinks — so warping
+// the regime sampling position by it makes the regions SWIRL and shear like
+// fluid/weather fronts rather than just fading in place. Evolves with time so
+// the flow itself rolls over.
+vec2 flow(vec2 p, float t){
+  vec2 v = vec2(0.0);
+  for (int i = 0; i < 3; i++){
+    float fi = float(i);
+    float ang = 1.7 + fi * 2.27;
+    vec2 d = vec2(cos(ang), sin(ang));
+    float f = 1.2 * pow(1.9, fi);
+    float s = 0.09 * (1.0 + 0.5 * fi);
+    float c = cos(dot(p, d) * f + t * s);
+    v += vec2(d.y, -d.x) * (f * c) * pow(0.55, fi);   // perp(∇potential) = curl
+  }
+  return v;
+}
 
 // Smooth, isotropic, slowly-drifting scalar field in ~[0,1]. Built from a few
 // plane waves at evenly-spread angles (so there is NO axis bias — statistically
@@ -170,8 +194,11 @@ void main(){
   // regimes flow across the screen and morph over time (not a fixed gradient).
   // Isotropic units (divide by height) so blobs are round, not stretched.
   vec2 pos = (vec2(c) + 0.5) / float(sz.y);
-  float regime = fbm(pos, uTime, uSeed + 0.37);   // 0..1, monotonic in k
-  float F = mix(uFmin, uFmax, fbm(pos, uTime, uSeed));
+  // Advect the sampling position along the curl-noise flow → swirling regimes.
+  // F and k share the same warp so a region moves as one coherent body.
+  vec2 wpos = pos + uSwirl * flow(pos, uTime);
+  float regime = fbm(wpos, uTime, uSeed + 0.37);   // 0..1, monotonic in k
+  float F = mix(uFmin, uFmax, fbm(wpos, uTime, uSeed));
   float k = mix(uKmin, uKmax, regime);
 
   float uvv = U * V * V;
@@ -283,7 +310,7 @@ function seed() {
 }
 
 function allocate() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  const dpr = Math.min(window.devicePixelRatio || 1, CONFIG.maxDPR);
   canvas.width  = Math.max(2, Math.floor(window.innerWidth  * dpr));
   canvas.height = Math.max(2, Math.floor(window.innerHeight * dpr));
 
@@ -324,6 +351,7 @@ function step(stepCount, timeSec) {
   gl.uniform1f(progSim._u('uSeed'), SEED);
   gl.uniform1f(progSim._u('uFieldScale'), CONFIG.fieldScale);
   gl.uniform1f(progSim._u('uFieldDrift'), CONFIG.fieldDrift);
+  gl.uniform1f(progSim._u('uSwirl'), CONFIG.regimeSwirl);
   gl.uniform1f(progSim._u('uFmin'), CONFIG.Fmin);
   gl.uniform1f(progSim._u('uFmax'), CONFIG.Fmax);
   gl.uniform1f(progSim._u('uKmin'), CONFIG.kmin);
