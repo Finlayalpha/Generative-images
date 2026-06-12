@@ -59,8 +59,11 @@ const CONFIG = {
   // independent of screen resolution, so GPU cost is constant and the CPU
   // stays idle. Upscaled to the screen with linear filtering. RD is cheap
   // (a 9-tap Laplacian per cell), so this can go high — finer, more numerous
-  // creatures. Raise further (e.g. 640) if your GPU has headroom.
-  gridHeight: 448,
+  // creatures. NB creature size is a fixed number of CELLS, so raising this
+  // shrinks each creature on screen; to keep big creatures at high detail,
+  // raise this AND scale Du/Dv up together (and add substeps to stay stable,
+  // Du·dt < 0.25). 768–1024 is fine on a desktop GPU.
+  gridHeight: 512,
 
   // Gray–Scott diffusion + timestep (classic Karl-Sims values; stable for the
   // 9-point Laplacian with Dᵤ·dt < 0.25).
@@ -167,43 +170,71 @@ void main(){
   // regimes flow across the screen and morph over time (not a fixed gradient).
   // Isotropic units (divide by height) so blobs are round, not stretched.
   vec2 pos = (vec2(c) + 0.5) / float(sz.y);
+  float regime = fbm(pos, uTime, uSeed + 0.37);   // 0..1, monotonic in k
   float F = mix(uFmin, uFmax, fbm(pos, uTime, uSeed));
-  float k = mix(uKmin, uKmax, fbm(pos, uTime, uSeed + 0.37));
+  float k = mix(uKmin, uKmax, regime);
 
   float uvv = U * V * V;
-  float nU = U + uDt * (uDu * lap.r - uvv + F * (1.0 - U));
-  float nV = V + uDt * (uDv * lap.g + uvv - (F + k) * V);
+  float dV  = uDt * (uDv * lap.g + uvv - (F + k) * V);   // deterministic ∂V/∂t·dt
+  float nU  = U + uDt * (uDu * lap.r - uvv + F * (1.0 - U));
+  float nV  = V + dV;
   nV += (hash(vec2(c) + uStep) - 0.5) * uNoise;   // anti-freeze whisper
-  o = vec4(clamp(nU, 0.0, 1.0), clamp(nV, 0.0, 1.0), 0.0, 1.0);
+
+  // Reaction activity: |∂V/∂t| (excludes noise so it's the real growth/decay
+  // rate). A leaky-max trail so freshly-reacting edges glow then fade — this is
+  // the "where is it alive right now" channel the colour pass uses for rim light.
+  float prevA = texelFetch(uState, c, 0).a;
+  float act = max(prevA * 0.90, clamp(abs(dV) * 28.0, 0.0, 1.0));
+
+  o = vec4(clamp(nU, 0.0, 1.0), clamp(nV, 0.0, 1.0), regime, act);
 }`;
 
-// Display: upscale and heat-map the V chemical (matches the sibling wallpaper).
+// Display: colour is a function of three pieces of state, not just V —
+//   intensity  ← V (mass)                : how bright / how far up the ramp
+//   hue/temp   ← regime (the k-field)    : WHICH palette, so calm vs chaotic
+//                                          regions read differently and the
+//                                          colours flow as the regime field does
+//   rim light  ← reaction activity |∂V/∂t|: the growing membranes glow; static
+//                                          interiors stay matte
 const DISP_F = `#version 300 es
 precision highp float;
 out vec4 outColor;
 uniform sampler2D uState;
 uniform vec2 uRes;
 uniform float uVignette;
-vec3 heat(float t){
+
+// Generic 6-stop ramp evaluator.
+vec3 ramp(float t, vec3 a, vec3 b, vec3 c, vec3 d, vec3 e, vec3 f){
   t = clamp(t, 0.0, 1.0);
-  const vec3 c0 = vec3(0.00, 0.00, 0.00);
-  const vec3 c1 = vec3(0.13, 0.05, 0.28);
-  const vec3 c2 = vec3(0.47, 0.11, 0.42);
-  const vec3 c3 = vec3(0.78, 0.20, 0.24);
-  const vec3 c4 = vec3(0.96, 0.49, 0.12);
-  const vec3 c5 = vec3(0.99, 0.81, 0.22);
-  const vec3 c6 = vec3(1.00, 1.00, 0.96);
-  if (t < 0.20) return mix(c0, c1, t / 0.20);
-  if (t < 0.40) return mix(c1, c2, (t - 0.20) / 0.20);
-  if (t < 0.60) return mix(c2, c3, (t - 0.40) / 0.20);
-  if (t < 0.78) return mix(c3, c4, (t - 0.60) / 0.18);
-  if (t < 0.91) return mix(c4, c5, (t - 0.78) / 0.13);
-  return mix(c5, c6, (t - 0.91) / 0.09);
+  if (t < 0.2) return mix(a, b, t / 0.2);
+  if (t < 0.4) return mix(b, c, (t - 0.2) / 0.2);
+  if (t < 0.6) return mix(c, d, (t - 0.4) / 0.2);
+  if (t < 0.8) return mix(d, e, (t - 0.6) / 0.2);
+  return mix(e, f, (t - 0.8) / 0.2);
 }
+// Cool palette — calm / spotty regimes: ink → teal → aqua → pale ice.
+vec3 cool(float t){ return ramp(t,
+  vec3(0.01,0.02,0.06), vec3(0.03,0.12,0.26), vec3(0.00,0.34,0.45),
+  vec3(0.10,0.62,0.60), vec3(0.55,0.88,0.80), vec3(0.92,0.99,0.98)); }
+// Warm palette — chaotic / wormy regimes: ink → plum → crimson → amber → white.
+vec3 warm(float t){ return ramp(t,
+  vec3(0.04,0.01,0.06), vec3(0.28,0.05,0.30), vec3(0.62,0.10,0.30),
+  vec3(0.90,0.31,0.16), vec3(0.99,0.70,0.24), vec3(1.00,0.98,0.90)); }
+
 void main(){
   vec2 uv = gl_FragCoord.xy / uRes;
-  float v = texture(uState, uv).g;
-  vec3 col = heat(pow(clamp(v * 2.4, 0.0, 1.0), 0.8));
+  vec4 s = texture(uState, uv);
+  float v = s.g, regime = s.b, act = s.a;
+
+  float t = pow(clamp(v * 2.4, 0.0, 1.0), 0.8);          // intensity from mass
+  // Blend palettes by regime — smoothstep keeps the transition organic, and a
+  // tiny v-term lets denser structure read slightly "warmer" within a region.
+  float warmth = clamp(smoothstep(0.35, 0.75, regime) + 0.15 * v, 0.0, 1.0);
+  vec3 col = mix(cool(t), warm(t), warmth);
+
+  // Rim light on actively-reacting edges (the autocatalytic growth front).
+  col += act * smoothstep(0.04, 0.30, v) * vec3(1.00, 0.92, 0.72) * 0.9;
+
   vec2 q = uv - 0.5; col *= 1.0 - uVignette * dot(q, q) * 2.0;
   outColor = vec4(max(col, 0.0), 1.0);
 }`;
@@ -221,7 +252,7 @@ let tex = [null, null], fbo = [null, null], src = 0;
 function makeTex(w, h, data) {
   const t = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, t);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, w, h, 0, gl.RG, gl.FLOAT, data);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, data);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -229,10 +260,12 @@ function makeTex(w, h, data) {
   return t;
 }
 
-// Seed: U=1, V=0 everywhere, then random blobs of V to ignite the reaction.
+// Seed: U=1, V=0 everywhere (RGBA = U,V,regime,activity), then random blobs of
+// V to ignite the reaction. B/A are written by the sim; their seed values don't
+// matter (overwritten on step 1).
 function seed() {
-  const a = new Float32Array(gridW * gridH * 2);
-  for (let i = 0; i < gridW * gridH; i++) { a[i*2] = 1.0; a[i*2+1] = 0.0; }
+  const a = new Float32Array(gridW * gridH * 4);
+  for (let i = 0; i < gridW * gridH; i++) { a[i*4] = 1.0; }
   for (let d = 0; d < CONFIG.seedDisks; d++) {
     const cx = Math.random() * gridW, cy = Math.random() * gridH;
     const rr = 3 + Math.random() * 7;
@@ -242,7 +275,7 @@ function seed() {
       const dx = x - cx, dy = y - cy;
       if (dx*dx + dy*dy > rr*rr) continue;
       const gx = ((x % gridW) + gridW) % gridW, gy = ((y % gridH) + gridH) % gridH;
-      const idx = (gx + gy * gridW) * 2;
+      const idx = (gx + gy * gridW) * 4;
       a[idx] = 0.5; a[idx+1] = 0.25;
     }
   }
@@ -332,7 +365,7 @@ document.addEventListener('visibilitychange', () => {
 // Click / tap to reseed.
 canvas.addEventListener('pointerdown', () => {
   gl.bindTexture(gl.TEXTURE_2D, tex[src]);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gridW, gridH, gl.RG, gl.FLOAT, seed());
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gridW, gridH, gl.RGBA, gl.FLOAT, seed());
 });
 let resizeTimer = null;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(allocate, 200); });
