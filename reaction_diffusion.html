@@ -64,14 +64,19 @@ const CONFIG = {
   // 9-point Laplacian with Dᵤ·dt < 0.25).
   Du: 0.16, Dv: 0.08, dt: 1.0,
 
-  // Feed (F) and kill (k) rates vary across the grid so the screen spans the
-  // whole Pearson zoo at once — spots, worms, loops, mitosis, spatiotemporal
-  // chaos — and the interfaces between regimes never stop moving.
-  //   F: top → bottom,  k: left → right.
-  Fmin: 0.012, Fmax: 0.045,
+  // Feed (F) and kill (k) rates are sampled from a smooth, isotropic field that
+  // DRIFTS over space *and time* (see fbm() in the shader) instead of a fixed
+  // corner-biased gradient. So the regime map is fluid: a patch of screen flows
+  // through spots → worms → mitosis → chaos → quiet → back again as the field
+  // moves over it, with no preferred direction. Fmin/Fmax and kmin/kmax set the
+  // range the field roams across (the valid/interesting Gray–Scott rectangle).
+  Fmin: 0.010, Fmax: 0.046,
   kmin: 0.045, kmax: 0.065,
+  fieldScale: 2.6,   // larger = smaller regime blobs (more of them on screen)
+  fieldDrift: 0.10,  // how fast the regime field flows (lower = more languid)
 
-  noise: 0.0015,   // tiny jitter into V each step — anti-freeze insurance
+  noise: 0.0020,   // tiny jitter into V each step — anti-freeze + lets dead
+                   //   regions re-ignite when a living regime drifts back over them
   seedDisks: 80,   // random V blobs to ignite the reaction
   substeps: 8,     // sim steps per displayed frame (RD is cheap; this animates it)
   fps: 30,
@@ -114,10 +119,35 @@ const SIM_F = `#version 300 es
 precision highp float;
 out vec4 o;
 uniform sampler2D uState;
-uniform float uDu, uDv, uDt, uNoise, uTime;
+uniform float uDu, uDv, uDt, uNoise, uStep;
 uniform float uFmin, uFmax, uKmin, uKmax;
+uniform float uTime, uSeed, uFieldScale, uFieldDrift;
 
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+// Smooth, isotropic, slowly-drifting scalar field in ~[0,1]. Built from a few
+// plane waves at evenly-spread angles (so there is NO axis bias — statistically
+// the same in every direction) whose phases creep with time. This is what makes
+// the regime map fluid: sampling F and k from this field means the behavioural
+// regions migrate across the screen and morph instead of sitting in fixed
+// corners. 'seed' decorrelates the two fields (one for F, one for k) and
+// randomises the layout per page load.
+float fbm(vec2 p, float t, float seed){
+  float s = 0.0, amp = 0.0;
+  for (int i = 0; i < 5; i++){
+    float fi = float(i);
+    float ang = seed * 6.2831853 + fi * 1.2566371;        // 72° apart, rotated by seed
+    vec2 dir = vec2(cos(ang), sin(ang));
+    float freq = uFieldScale * pow(1.6, fi);              // octaves: rising spatial freq
+    float spd  = uFieldDrift * (1.0 + 0.4 * fi);          // finer octaves drift faster
+    float w    = pow(0.6, fi);                            // ... and weigh less (fbm)
+    s   += w * sin(dot(p, dir) * freq + t * spd + seed * 17.0 + fi * 2.399);
+    amp += w;
+  }
+  // contrast-stretch a little so the field actually visits the regime extremes
+  float v = s / amp * 0.5 + 0.5;
+  return clamp((v - 0.5) * 1.35 + 0.5, 0.0, 1.0);
+}
 
 void main(){
   ivec2 sz = textureSize(uState, 0);
@@ -131,15 +161,17 @@ void main(){
   vec2 lap = -cc + 0.2*(l+r+u+d) + 0.05*(ul+ur+dl+dr);
 
   float U = cc.r, V = cc.g;
-  // Spatially-varying feed/kill: sweep the whole Pearson parameter map.
-  vec2 nuv = (vec2(c) + 0.5) / vec2(sz);
-  float F = mix(uFmin, uFmax, nuv.y);
-  float k = mix(uKmin, uKmax, nuv.x);
+  // Fluid feed/kill: sample F and k from the drifting isotropic field so the
+  // regimes flow across the screen and morph over time (not a fixed gradient).
+  // Isotropic units (divide by height) so blobs are round, not stretched.
+  vec2 pos = (vec2(c) + 0.5) / float(sz.y);
+  float F = mix(uFmin, uFmax, fbm(pos, uTime, uSeed));
+  float k = mix(uKmin, uKmax, fbm(pos, uTime, uSeed + 0.37));
 
   float uvv = U * V * V;
   float nU = U + uDt * (uDu * lap.r - uvv + F * (1.0 - U));
   float nV = V + uDt * (uDv * lap.g + uvv - (F + k) * V);
-  nV += (hash(vec2(c) + uTime) - 0.5) * uNoise;   // anti-freeze whisper
+  nV += (hash(vec2(c) + uStep) - 0.5) * uNoise;   // anti-freeze whisper
   o = vec4(clamp(nU, 0.0, 1.0), clamp(nV, 0.0, 1.0), 0.0, 1.0);
 }`;
 
@@ -238,7 +270,9 @@ function allocate() {
 /* ===========================================================================
    Frame: a few GPU sim steps (ping-pong) + one display blit. CPU work ≈ nil.
    =========================================================================== */
-function step(time) {
+const SEED = Math.random();   // randomises the regime layout per page load
+
+function step(stepCount, timeSec) {
   const dst = 1 - src;
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo[dst]);
   gl.viewport(0, 0, gridW, gridH);
@@ -250,7 +284,11 @@ function step(time) {
   gl.uniform1f(progSim._u('uDv'), CONFIG.Dv);
   gl.uniform1f(progSim._u('uDt'), CONFIG.dt);
   gl.uniform1f(progSim._u('uNoise'), CONFIG.noise);
-  gl.uniform1f(progSim._u('uTime'), time);
+  gl.uniform1f(progSim._u('uStep'), stepCount);      // varies each step → decorrelates jitter
+  gl.uniform1f(progSim._u('uTime'), timeSec);        // wall-clock seconds → drifts the regime field
+  gl.uniform1f(progSim._u('uSeed'), SEED);
+  gl.uniform1f(progSim._u('uFieldScale'), CONFIG.fieldScale);
+  gl.uniform1f(progSim._u('uFieldDrift'), CONFIG.fieldDrift);
   gl.uniform1f(progSim._u('uFmin'), CONFIG.Fmin);
   gl.uniform1f(progSim._u('uFmax'), CONFIG.Fmax);
   gl.uniform1f(progSim._u('uKmin'), CONFIG.kmin);
@@ -280,7 +318,8 @@ function frame(tMs) {
   requestAnimationFrame(frame);
   if (tMs - lastFrame < 1000 / CONFIG.fps) return;
   lastFrame = tMs;
-  for (let s = 0; s < CONFIG.substeps; s++) { t += 1.0; step(t); }
+  const timeSec = tMs / 1000;
+  for (let s = 0; s < CONFIG.substeps; s++) { t += 1.0; step(t, timeSec); }
   display();
 }
 
