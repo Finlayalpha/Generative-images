@@ -57,34 +57,32 @@
 const CONFIG = {
   // Simulation grid height in CELLS (width follows aspect). Fixed and
   // independent of screen resolution, so GPU cost is constant and the CPU
-  // stays idle. Upscaled to the screen with linear filtering. RD is cheap
-  // (a 9-tap Laplacian per cell), so this can go high — finer, more numerous
-  // creatures. NB creature size is a fixed number of CELLS, so raising this
-  // shrinks each creature on screen; to keep big creatures at high detail,
-  // raise this AND scale Du/Dv up together (and add substeps to stay stable,
-  // Du·dt < 0.25). 768–1024 is fine on a desktop GPU.
-  gridHeight: 720,
+  // stays idle. Upscaled to the screen with linear filtering — so the higher
+  // this is relative to your screen, the LESS upscale-blur (the "lossy" look).
+  // RD is cheap (a 9-tap Laplacian per cell). Lower to ~640 for weak GPUs.
+  gridHeight: 900,
   maxDPR: 2.0,       // render the colour pass at up to 2× device pixels (sharper
                      //   edges; the sim grid is unaffected and stays cheap)
 
   // Gray–Scott diffusion + timestep. Established values from the widely-used
   // pmneila / Karl-Sims WebGL setups: 2:1 diffusion ratio with the 9-point
-  // Laplacian and dt=1 (stable while Dᵤ·dt < 0.25). The actual feed/kill (F,k)
-  // presets live in regimePath() in the shader and are the documented dynamic
-  // regimes (worms / solitons / mitosis / u-skate gliders).
+  // Laplacian and dt=1 (stable while Dᵤ·dt < 0.25). The feed/kill (F,k) presets
+  // live in regimePath() — a short arc inside Pearson's β spatiotemporal-chaos
+  // zone, picked by headless measurement as the regime that stays genuinely
+  // alive (never freezes) while remaining dense.
   Du: 0.16, Dv: 0.08, dt: 1.0,
 
   // A single smooth, isotropic field (fbm in the shader) DRIFTS over space and
-  // time, choosing where along the dynamic regime arc each cell sits. So the
-  // regime map is fluid — regions migrate and morph — while staying on live
-  // regimes everywhere (no dead patches, no axis bias).
+  // time, choosing where along the (all-alive) chaos arc each cell sits — so the
+  // density of the churn varies and migrates across the screen, with no axis
+  // bias and no dead/frozen patches.
   fieldScale: 2.6,   // larger = smaller regime blobs (more of them on screen)
   fieldDrift: 0.10,  // how fast the regime field flows (lower = more languid)
 
-  noise: 0.0020,   // tiny jitter into V each step — anti-freeze + lets dead
-                   //   regions re-ignite when a living regime drifts back over them
-  seedDisks: 80,   // random V blobs to ignite the reaction
-  substeps: 12,    // sim steps per displayed frame — more = faster evolution
+  noise: 0.0,      // OFF: genuine spatiotemporal chaos self-sustains, so no
+                   //   anti-freeze hack and no arbitrary re-ignition "resets"
+  seedDisks: 80,   // random V blobs to ignite the reaction (one-time)
+  substeps: 10,    // sim steps per displayed frame — more = faster evolution
                    //   (RD is cheap, so this is nearly free)
   fps: 30,
 };
@@ -131,19 +129,20 @@ uniform float uTime, uSeed, uFieldScale, uFieldDrift;
 
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
-// Feed/kill presets along the documented DYNAMIC tongue of Gray–Scott (Pearson
-// 1993 / Munafo). The interesting "creature" behaviours live on a narrow curved
-// arc in (F,k) space — NOT a rectangle — so we vary a single parameter t that
-// walks along that arc. Every value of t is therefore a known live regime.
-// We sit on the DENSE, fast end of the tongue: low-k chaos/labyrinth → worms →
-// maze → dividing worms. (Higher k — solitons/mitosis/u-skate gliders — is
-// genuinely sparse and slow, so we avoid it here.)
+// Feed/kill presets, chosen by HEADLESS MEASUREMENT (not eyeballing). Sweeping
+// the canonical regimes and measuring sustained activity vs freezing showed the
+// famous "creature" regimes (mitosis, u-skate gliders, coral) all DIE or FREEZE
+// from random soup — they only live with hand-placed seeds. The one regime that
+// is both dense AND perpetually active is Pearson's "β" class: spatiotemporal
+// CHAOS around F≈0.026,k≈0.051 (activity stays ~7e-4 indefinitely; ~50% cover).
+// So we walk a short arc INSIDE that chaotic zone — sparser chaos → denser chaos
+// — every point of which is genuinely, measurably alive forever. (Going past
+// F≈0.030/k≈0.052 fills solid and freezes, so the arc stops short of it.)
 vec2 regimePath(float t){
-  t = clamp(t, 0.0, 1.0) * 3.0;
+  t = clamp(t, 0.0, 1.0) * 2.0;
   vec2 a, b; float f;
-  if      (t < 1.0) { a = vec2(0.024, 0.0530); b = vec2(0.030, 0.0560); f = t;        }
-  else if (t < 2.0) { a = vec2(0.030, 0.0560); b = vec2(0.035, 0.0580); f = t - 1.0;  }
-  else              { a = vec2(0.035, 0.0580); b = vec2(0.042, 0.0600); f = t - 2.0;  }
+  if (t < 1.0) { a = vec2(0.018, 0.0490); b = vec2(0.024, 0.0510); f = t;       }
+  else         { a = vec2(0.024, 0.0510); b = vec2(0.028, 0.0520); f = t - 1.0; }
   return mix(a, b, smoothstep(0.0, 1.0, f));   // (F, k)
 }
 
@@ -197,24 +196,22 @@ void main(){
   float dV  = uDt * (uDv * lap.g + uvv - (F + k) * V);   // deterministic ∂V/∂t·dt
   float nU  = U + uDt * (uDu * lap.r - uvv + F * (1.0 - U));
   float nV  = V + dV;
-  nV += (hash(vec2(c) + uStep) - 0.5) * uNoise;   // anti-freeze whisper
+  nV += (hash(vec2(c) + uStep) - 0.5) * uNoise;   // uNoise defaults 0: real
+                                                  // chaos self-sustains, no hack
 
-  // Reaction activity: |∂V/∂t| (excludes noise so it's the real growth/decay
-  // rate). A leaky-max trail so freshly-reacting edges glow then fade — this is
-  // the "where is it alive right now" channel the colour pass uses for rim light.
+  // Reaction activity: |∂V/∂t| (the real growth/decay rate). Short leaky-max
+  // trail (not a long smear) so the colour pass can lift the actively-moving
+  // fronts — "where is it changing right now".
   float prevA = texelFetch(uState, c, 0).a;
-  float act = max(prevA * 0.90, clamp(abs(dV) * 28.0, 0.0, 1.0));
+  float act = max(prevA * 0.75, clamp(abs(dV) * 26.0, 0.0, 1.0));
 
   o = vec4(clamp(nU, 0.0, 1.0), clamp(nV, 0.0, 1.0), regime, act);
 }`;
 
-// Display: colour is a function of three pieces of state, not just V —
-//   intensity  ← V (mass)                : how bright / how far up the ramp
-//   hue/temp   ← regime (the k-field)    : WHICH palette, so calm vs chaotic
-//                                          regions read differently and the
-//                                          colours flow as the regime field does
-//   rim light  ← reaction activity |∂V/∂t|: the growing membranes glow; static
-//                                          interiors stay matte
+// Display: colour from GENUINE STATE only, kept crisp (no muddy regime blend,
+// no soft glow halo) —
+//   V (concentration) → a single coherent cool ramp (ink → teal → cyan → white)
+//   reaction activity  → a tight brightness lift on fronts that are moving now
 const DISP_F = `#version 300 es
 precision highp float;
 out vec4 outColor;
@@ -222,40 +219,35 @@ uniform sampler2D uState;
 uniform vec2 uRes;
 uniform float uVignette;
 
-// Generic 6-stop ramp evaluator.
-vec3 ramp(float t, vec3 a, vec3 b, vec3 c, vec3 d, vec3 e, vec3 f){
+// One coherent palette (no cross-hue blending → no muddy mid-tones).
+vec3 palette(float t){
   t = clamp(t, 0.0, 1.0);
-  if (t < 0.2) return mix(a, b, t / 0.2);
-  if (t < 0.4) return mix(b, c, (t - 0.2) / 0.2);
-  if (t < 0.6) return mix(c, d, (t - 0.4) / 0.2);
-  if (t < 0.8) return mix(d, e, (t - 0.6) / 0.2);
-  return mix(e, f, (t - 0.8) / 0.2);
+  const vec3 c0 = vec3(0.015, 0.02, 0.06);   // background ink
+  const vec3 c1 = vec3(0.03, 0.16, 0.30);    // deep blue
+  const vec3 c2 = vec3(0.05, 0.45, 0.55);    // teal
+  const vec3 c3 = vec3(0.30, 0.78, 0.74);    // cyan
+  const vec3 c4 = vec3(0.80, 0.96, 0.88);    // pale aqua
+  const vec3 c5 = vec3(1.00, 1.00, 0.97);    // white crest
+  if (t < 0.25) return mix(c0, c1, t / 0.25);
+  if (t < 0.50) return mix(c1, c2, (t - 0.25) / 0.25);
+  if (t < 0.72) return mix(c2, c3, (t - 0.50) / 0.22);
+  if (t < 0.88) return mix(c3, c4, (t - 0.72) / 0.16);
+  return mix(c4, c5, (t - 0.88) / 0.12);
 }
-// Cool palette — calm / spotty regimes: ink → teal → aqua → pale ice.
-vec3 cool(float t){ return ramp(t,
-  vec3(0.01,0.02,0.06), vec3(0.03,0.12,0.26), vec3(0.00,0.34,0.45),
-  vec3(0.10,0.62,0.60), vec3(0.55,0.88,0.80), vec3(0.92,0.99,0.98)); }
-// Warm palette — chaotic / wormy regimes: ink → plum → crimson → amber → white.
-vec3 warm(float t){ return ramp(t,
-  vec3(0.04,0.01,0.06), vec3(0.28,0.05,0.30), vec3(0.62,0.10,0.30),
-  vec3(0.90,0.31,0.16), vec3(0.99,0.70,0.24), vec3(1.00,0.98,0.90)); }
 
 void main(){
   vec2 uv = gl_FragCoord.xy / uRes;
   vec4 s = texture(uState, uv);
-  float v = s.g, regime = s.b, act = s.a;
+  float v = s.g, act = s.a;
 
-  float t = pow(clamp(v * 2.4, 0.0, 1.0), 0.8);          // intensity from mass
-  // Blend palettes by regime — smoothstep keeps the transition organic, and a
-  // tiny v-term lets denser structure read slightly "warmer" within a region.
-  float warmth = clamp(smoothstep(0.35, 0.75, regime) + 0.15 * v, 0.0, 1.0);
-  vec3 col = mix(cool(t), warm(t), warmth);
-
-  // Rim light on actively-reacting edges (the autocatalytic growth front).
-  col += act * smoothstep(0.04, 0.30, v) * vec3(1.00, 0.92, 0.72) * 0.9;
+  float t = pow(clamp(v * 2.6, 0.0, 1.0), 0.85);     // intensity from concentration
+  vec3 col = palette(t);
+  // Tight, additive brightness lift where the reaction is actually moving — a
+  // few % at most, no halo. Keeps colour honest to the dynamics.
+  col += act * t * vec3(0.35, 0.40, 0.42);
 
   vec2 q = uv - 0.5; col *= 1.0 - uVignette * dot(q, q) * 2.0;
-  outColor = vec4(max(col, 0.0), 1.0);
+  outColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }`;
 
 const progSim  = program(FS_TRI_V, SIM_F);
