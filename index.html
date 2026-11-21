@@ -1,28 +1,47 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-GB">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0f766e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Free Parking" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
     <title>Free Parking Finder</title>
   </head>
   <body>
     <div id="map" aria-label="Map"></div>
 
-    <aside id="panel" aria-label="Find parking">
-      <header>
-        <h1>Free Parking Finder</h1>
-        <button id="collapse" class="icon" aria-expanded="true" aria-controls="panel-body" title="Hide panel">▾</button>
-      </header>
-      <div id="panel-body">
+    <section id="sheet" aria-label="Find parking">
+      <button id="grabber" class="grabber" aria-expanded="true" aria-controls="sheet-body" title="Show or hide the panel">
+        <span></span>
+      </button>
+      <div id="sheet-body">
         <form id="search-form" role="search">
-          <label for="q">Where do you want to park?</label>
+          <label for="q" class="title">Where do you want to park?</label>
           <div class="search">
-            <input id="q" type="search" placeholder="Address, place or postcode" autocomplete="off" required />
+            <input id="q" type="search" placeholder="Address, place or postcode" autocomplete="off" enterkeyhint="search" required />
             <button class="primary" type="submit">Find</button>
           </div>
           <button id="locate" type="button" class="link">Or park near my location</button>
         </form>
+
+        <details id="vehicle">
+          <summary><span class="label">Your vehicle</span> <span id="vehicle-summary"></span></summary>
+          <div class="vehicle-form">
+            <label>Type
+              <select id="preset"></select>
+            </label>
+            <div class="row three">
+              <label>Length (m)<input id="v-length" type="number" inputmode="decimal" min="2" max="12" step="0.05" /></label>
+              <label>Width (m)<input id="v-width" type="number" inputmode="decimal" min="1.2" max="2.6" step="0.05" /></label>
+              <label>Height (m)<input id="v-height" type="number" inputmode="decimal" min="1" max="4.5" step="0.05" /></label>
+            </div>
+            <p class="hint">Width without mirrors. Height including roof bars or boxes. Results that your vehicle won't fit are hidden.</p>
+          </div>
+        </details>
 
         <div class="row">
           <label>Arrive
@@ -46,17 +65,16 @@
               <option value="200">200 m (~3 min walk)</option>
               <option value="400" selected>400 m (~5 min walk)</option>
               <option value="800">800 m (~10 min walk)</option>
-              <option value="1500">1.5 km (~20 min walk)</option>
             </select>
           </label>
           <label>Sort by
             <select id="sort">
-              <option value="best" selected>Best match</option>
-              <option value="nearest">Nearest</option>
-              <option value="likely">Most likely</option>
+              <option value="nearest" selected>Nearest</option>
+              <option value="certain">Best-known rules first</option>
             </select>
           </label>
         </div>
+        <label class="check"><input id="unsurveyed" type="checkbox" checked /> Include streets whose rules aren't mapped yet</label>
 
         <p id="status" role="status"></p>
         <ol id="results" aria-label="Parking results"></ol>
@@ -66,21 +84,21 @@
           <ul id="legend"></ul>
         </details>
         <details class="info">
-          <summary>How results are ranked</summary>
+          <summary>How results are chosen</summary>
           <p>
-            Only places that are <strong>free and legal for your whole stay</strong> are listed.
-            <em>Likelihood</em> = chance the mapped rules are right × chance at least one space is empty.
-            Space counts are estimated from kerb length when not mapped, and occupancy is an assumption
-            until real-time data is added. <em>Best match</em> balances both: a spot 400 m further away needs to be
-            about 2.7× as likely to rank the same.
+            A place is listed only if it is <strong>free and legal for your whole stay</strong> and your vehicle fits.
+            Where a street's parking rules are mapped in OpenStreetMap we use them. Everywhere else we apply UK national rules
+            (Highway Code): no parking within 10 m of a junction, on crossing zig-zags, at bus stops, across driveways and
+            dropped kerbs, in cycle and bus lanes, or by double white lines. Those streets are marked
+            <em>Unsurveyed</em>: always check for yellow lines and signs.
           </p>
         </details>
         <p class="fine">
-          Regulations from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>
-          contributors. Always check the signs on the street: data may be missing or out of date.
+          Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>
+          contributors. A guide only: the signs and lines on the street always take priority.
         </p>
       </div>
-    </aside>
+    </section>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

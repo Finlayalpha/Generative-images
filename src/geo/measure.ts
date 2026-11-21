@@ -85,40 +85,69 @@ export function sideCompass(line: LatLon[], side: 'left' | 'right'): string {
   return COMPASS[idx]!;
 }
 
+export function lineLength(line: LatLon[]): number {
+  let total = 0;
+  for (let i = 1; i < line.length; i++) total += distanceM(line[i - 1]!, line[i]!);
+  return total;
+}
+
+/** Cumulative distance (m) at each vertex. */
+function cumulative(line: LatLon[]): number[] {
+  const cum = [0];
+  for (let i = 1; i < line.length; i++) cum.push(cum[i - 1]! + distanceM(line[i - 1]!, line[i]!));
+  return cum;
+}
+
+function interpolate(line: LatLon[], cum: number[], d: number): LatLon {
+  let i = 1;
+  while (i < cum.length - 1 && cum[i]! < d) i++;
+  const seg = cum[i]! - cum[i - 1]!;
+  const t = seg === 0 ? 0 : Math.max(0, Math.min(1, (d - cum[i - 1]!) / seg));
+  const a = line[i - 1]!;
+  const b = line[i]!;
+  return { lat: a.lat + t * (b.lat - a.lat), lon: a.lon + t * (b.lon - a.lon) };
+}
+
+/** The part of a polyline between distances `d0` and `d1` (m) from its start. */
+export function sliceLine(line: LatLon[], d0: number, d1: number, cum = cumulative(line)): LatLon[] {
+  const piece = [interpolate(line, cum, d0)];
+  for (let i = 1; i < line.length - 1; i++) if (cum[i]! > d0 && cum[i]! < d1) piece.push(line[i]!);
+  piece.push(interpolate(line, cum, d1));
+  return piece;
+}
+
 /**
  * Split a polyline into consecutive pieces of roughly equal length, none longer
  * than `maxLenM`, so a long street becomes several block-sized results.
  */
 export function splitLine(line: LatLon[], maxLenM: number): LatLon[][] {
   if (line.length < 2) return [line];
-  const pj = projector(line[0]!);
-  const pts = line.map(pj.to);
-  const cum = [0];
-  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1]! + Math.hypot(pts[i]!.x - pts[i - 1]!.x, pts[i]!.y - pts[i - 1]!.y));
+  const cum = cumulative(line);
   const total = cum[cum.length - 1]!;
-  const n = Math.max(1, Math.ceil(total / maxLenM));
+  const n = Math.max(1, Math.ceil(total / maxLenM - 1e-6));
   if (n === 1) return [line];
+  return Array.from({ length: n }, (_, k) => sliceLine(line, (total * k) / n, (total * (k + 1)) / n, cum));
+}
 
-  const pointAt = (d: number): LatLon => {
-    let i = 1;
-    while (i < cum.length - 1 && cum[i]! < d) i++;
-    const seg = cum[i]! - cum[i - 1]!;
-    const t = seg === 0 ? 0 : (d - cum[i - 1]!) / seg;
-    const a = pts[i - 1]!;
-    const b = pts[i]!;
-    return pj.from(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y));
-  };
-
-  const pieces: LatLon[][] = [];
-  for (let k = 0; k < n; k++) {
-    const d0 = (total * k) / n;
-    const d1 = (total * (k + 1)) / n;
-    const piece = [pointAt(d0)];
-    for (let i = 1; i < line.length - 1; i++) if (cum[i]! > d0 && cum[i]! < d1) piece.push(line[i]!);
-    piece.push(pointAt(d1));
-    pieces.push(piece);
+/**
+ * Walk along a line in ~1 m steps and split it into runs where `classify`
+ * returns the same value. Returns each run's range and value.
+ */
+export function runsAlong<T>(line: LatLon[], classify: (p: LatLon) => T, stepM = 1): { from: number; to: number; value: T }[] {
+  const cum = cumulative(line);
+  const total = cum[cum.length - 1]!;
+  if (total === 0) return [];
+  const steps = Math.max(1, Math.ceil(total / stepM));
+  const runs: { from: number; to: number; value: T }[] = [];
+  for (let k = 0; k < steps; k++) {
+    const d0 = (total * k) / steps;
+    const d1 = (total * (k + 1)) / steps;
+    const value = classify(interpolate(line, cum, (d0 + d1) / 2));
+    const last = runs[runs.length - 1];
+    if (last && last.value === value) last.to = d1;
+    else runs.push({ from: d0, to: d1, value });
   }
-  return pieces;
+  return runs;
 }
 
 const SHORT_COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];

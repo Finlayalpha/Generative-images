@@ -1,137 +1,94 @@
-# Free Parking Finder
+# Free Parking Finder (UK)
 
-Find **free, legal** places to park for the time you plan to stay.
+A phone app that suggests **free, legal** places to park near where you're going, for the length of your stay,
+filtered to spaces your vehicle fits. It suggests places; it does not say whether a space is empty.
 
-You enter where you're going, when you'll arrive and how long you'll stay. The app lists the free, legal places
-within walking distance, ranked by distance and by how likely you are to get a space. A kerb only counts as
-free if it stays free and legal for your whole stay: if a fee, a clearway or a residents-only period starts
-halfway through, it is left out.
+You enter:
+- where you're going
+- when you'll arrive and how long you'll stay
+- your vehicle's length, width and height (remembered on the phone)
+
+You get a list of kerbs and car parks within walking distance, nearest first, each labelled by how well its rules
+are known.
 
 ```
 npm install
 npm run dev          # http://localhost:5173        (live OpenStreetMap data)
-                     # http://localhost:5173/?demo  (synthetic data, works offline)
-npm test             # rules-engine unit tests
-npm run build        # static site in dist/
+                     # http://localhost:5173/?demo  (synthetic demo town, works offline)
+npm test             # unit tests
+npm run build        # static PWA in dist/
 ```
 
-## How it works
+## Where the rules come from
 
-```
- "where to?" ──► Nominatim geocoder ──► destination point
-                                             │ + radius (200 m … 1.5 km)
-                                             ▼
-                          Overpass API (OSM): street ways with parking:* tags
-                                              + amenity=parking car parks
-                                             │
- arrive time + stay ──► rules engine ──► each kerb side: free / time-limited / paid /
-                                             │            permit / restricted / no parking
-                                             ▼
-                     split kerbs into ≤100 m blocks ──► distance + likelihood per block
-                                             │
-                                             ▼
-                     ranked list (best match / nearest / most likely) + map
-```
+See **[docs/UK_DATA_STRATEGY.md](docs/UK_DATA_STRATEGY.md)** for the full plan. In short, every street gets:
 
-### Ranking
+1. **UK national rules from the road layout** (every street in the UK). No parking:
+   - within 10 m of a junction
+   - on crossing zig-zags, at bus stops or taxi ranks
+   - across driveways and dropped kerbs, or near level crossings
+   - in cycle or bus lanes, by double white lines, on roundabouts or in tunnels
+   - where it would leave less than 3 m for traffic
 
-Each free and legal block of kerb, and each free car park, within the radius becomes one result:
+   These are cut out of the kerb (`src/uk/`).
+2. **Local rules mapped in OpenStreetMap** (`parking:<side>:*` tags), where they exist: fees, time windows, max
+   stay, residents' zones, clearways (`src/rules/`).
+3. **Next:** council open data (CPZs, bays, yellow lines), TfL red routes, the DfT's digital TRO service, and
+   user reports.
 
-* **Distance:** straight line from the destination to the nearest point of the block. Walking time is
-  estimated as distance × 1.3 at 80 m/min. The list also shows the direction, e.g. "40 m N".
-* **Likelihood** = P(the mapped rules are right) × P(at least one space is empty)
-  (`src/search/likelihood.ts`).
-  * Rules: 95% when fee and restrictions are mapped explicitly, 75% when the fee isn't mapped, 50% when a
-    condition couldn't be evaluated.
-  * Space: `1 − occupancy^spaces`. The space count comes from the `capacity` tag, or else from kerb length
-    (6 m per car parallel, 3.5 m diagonal, 2.8 m perpendicular).
-  * **The occupancy rates are placeholder assumptions** (about 90% on-street, varying by time of day). This
-    is the function to replace with real data.
-* **Best match** = likelihood × e^(−distance / 400 m). A spot 400 m further away has to be about 2.7× as likely
-  to rank level with the nearer one. *Nearest* and *Most likely* sort on one factor only.
+Each result is labelled **Rules mapped**, **Partly mapped** or **Unsurveyed** (national rules only: check for
+yellow lines and signs). Unsurveyed streets can be hidden.
 
-### Rules
+## Vehicle size
 
-* **Regulations come from OpenStreetMap's [street parking scheme](https://wiki.openstreetmap.org/wiki/Street_parking)**
-  (`parking:left|right|both`, `…:fee`, `…:maxstay`, `…:access`, `…:restriction`, `…:zone`,
-  `…:authentication:disc`, and their `:conditional` forms). The older `parking:lane` / `parking:condition`
-  tags are translated to the current scheme (`src/rules/legacy.ts`).
-* **Time rules** use the OSM [conditional restriction](https://wiki.openstreetmap.org/wiki/Conditional_restrictions)
-  syntax, evaluated with [`opening_hours`](https://github.com/opening-hours/opening_hours.js). Conditions such as
-  `stay > 1 hour` are also supported.
-* **The stay is sampled every 5 minutes.** Any fee, ban or permit-only period inside the stay disqualifies the
-  kerb. Max stay is counted only for the time the limit is actually in force.
-* **Every result has a confidence level.** *High*: fee and restrictions are mapped explicitly. *Medium*: there
-  is parking but no fee is mapped, so the app assumes free (drawn dashed). *Low*: some condition couldn't be
-  evaluated, e.g. `@ (snow)`.
+Body length, width and height in metres, with presets (city car to long-wheelbase high-roof van). Places are
+hidden when the vehicle won't fit, and flagged "Check size" when it's borderline (`src/vehicle.ts`):
 
-Code map:
+| Check | Rule |
+|---|---|
+| Street height, width and length limits | `maxheight` / `maxwidth` / `maxlength` on the street (e.g. low bridges) |
+| Car park clearance | `maxheight` on the car park. Multi-storey and underground car parks with no mapped limit are assumed to be 1.9–2.1 m |
+| Perpendicular and diagonal bays | UK standard 2.4 × 4.8 m: overhanging the markings is a contravention |
+| Marked parallel bays | Usually about 2.0 × 6.0 m |
+| Kerb gap length | At least vehicle length + 1 m, after the national-rule cut-outs |
+| Narrow streets | Mapped width − your width − a car opposite < 3 m means obstruction (HC 242) |
+
+## Ranking
+
+Results are listed nearest first: straight-line distance from the destination to the nearest point of each kerb
+block (≤ 100 m). The list also shows the direction ("40 m NE") and an estimated walk (× 1.3 at 80 m/min). "Best-known
+rules first" sorts by tier, then distance.
+
+## Code map
 
 | Path | What |
 |---|---|
-| `src/rules/engine.ts` | Core logic: `assessStreetSide()` and `assessCarPark()` |
-| `src/rules/conditional.ts` | Parses and evaluates `value @ (condition); …` |
-| `src/rules/legacy.ts` | Translates the old `parking:lane` scheme |
-| `src/search/rank.ts` | Turns parking data into ranked results: blocks, distance, likelihood, score, sort |
-| `src/search/likelihood.ts` | Space-count estimate and availability model (placeholder occupancy) |
-| `src/search/geocode.ts` | Address and place search (Nominatim) |
-| `src/data/overpass.ts` | Overpass radius query and response parsing |
-| `src/geo/offset.ts`, `src/geo/measure.ts` | Kerb offsetting, distances, splitting into blocks, compass labels |
-| `src/main.ts` | UI: search panel (a bottom sheet on phones), ranked list, map |
-| `test/engine.test.ts` | Scenarios: pay-and-display, clearways, residents zones, disc zones, legacy tags, car parks |
-| `test/search.test.ts` | Geometry, likelihood and ranking |
+| `src/rules/engine.ts` | Evaluates OSM parking tags for a stay: free / paid / permit / restricted / max stay |
+| `src/rules/conditional.ts`, `legacy.ts`, `duration.ts` | Time conditions, the old `parking:lane` scheme, durations |
+| `src/uk/zones.ts` | National-rule cut-outs: junctions, crossings, bus stops, driveways, … |
+| `src/uk/streets.ts` | Which unmapped streets can be suggested at all |
+| `src/uk/kerbs.ts` | Builds kerb pieces: mapped or inferred rules, cut-outs, vehicle fit |
+| `src/vehicle.ts` | Vehicle presets and size checks |
+| `src/search/rank.ts` | Blocks, distance, tiers, filtering and sorting |
+| `src/search/geocode.ts` | UK address and place search (Nominatim, `countrycodes=gb`) |
+| `src/data/overpass.ts` | Loads roads, rule-relevant points and car parks around the destination |
+| `src/main.ts`, `index.html`, `src/style.css` | Phone UI: bottom sheet, results list, map |
+| `public/` | PWA manifest, icons, service worker |
 
-## About satellite data
+## The app
 
-Satellites **can't tell you in real time whether a space is empty**, so the app doesn't depend on them for that:
+It's built as a phone-first progressive web app: it can be added to the home screen, opens full screen, and caches
+the app shell for poor signal. The same code can be wrapped with Capacitor to publish to the App Store and Google
+Play when we need native features such as background location or CarPlay / Android Auto.
 
-* **Latency and revisit.** The highest-resolution commercial satellites (about 30 cm per pixel) pass over a
-  given place a few times a day at best. Ordering, downlinking and processing the image takes hours. A space
-  that was empty in a morning image tells you nothing about now.
-* **Resolution and occlusion.** 30 cm per pixel is enough to count cars in an open car park. Kerbside spaces
-  are often hidden under trees, in building shadow or behind other vehicles, and cloud cover removes whole days.
-* **Cost and licensing.** Tasking imagery per city per hour would cost far more than an app like this could
-  earn, and redistribution licences usually forbid showing the imagery to users.
-
-Aerial and satellite imagery **is** valuable offline, for building the regulation map itself:
-
-* Detect painted bays, yellow lines, kerb markings and parking lanes, and propose OSM `parking:*` tags where
-  none exist. This is the biggest coverage gap.
-* Estimate typical occupancy of large surface car parks by time of day, using historical imagery.
-
-Better sources of real-time availability, roughly in order of how practical they are:
-
-1. **City open data:** on-street bay sensors (e.g. Melbourne, some Dutch and Spanish cities), meter and
-   payment feeds, and machine-readable kerb rules (CurbLR, CDS, the UK's digital Traffic Regulation Orders
-   programme).
-2. **Crowdsourcing:** "I'm leaving this space" and "I just parked" events from app users, plus passive signals
-   (a phone switches from driving to walking near a kerb).
-3. **Probabilistic prediction:** estimate the likelihood of finding a space from time, day, area and past
-   events. This is more useful than false precision.
-
-## Roadmap
-
-- [ ] **Coverage:** import official kerb and traffic-order datasets where they exist, and normalise them into
-      the same engine input as OSM tags.
-- [ ] **Coverage:** use an imagery model to suggest missing kerb tags for review (a MapRoulette-style workflow).
-- [ ] **Coverage:** add national default rules, e.g. "no parking within 10 m of a junction" (UK Highway Code
-      243, DE StVO §12) and dropped kerbs. These aren't signposted, so OSM rarely maps them.
-- [ ] **Rules:** load public holidays per country (pass a location context to `opening_hours`). Right now `PH`
-      rules are evaluated as if no day is a public holiday.
-- [ ] **Rules:** evaluate in the destination's time zone. Today the browser's local time is used.
-- [ ] **Rules:** vehicle profile (EV, motorbike, blue badge, van height and weight).
-- [ ] **Availability:** crowdsourced "leaving now" signals and a backend.
-- [ ] **Availability:** replace the placeholder `occupancyRate()` with predictions from real data.
-- [ ] **Ranking:** use walking-route distance instead of straight-line distance; split kerbs at junctions
-      instead of every ~100 m.
-- [ ] **Search:** autocomplete with a geocoder that allows it (Nominatim's public instance doesn't), and
-      keep the search in the URL so results can be shared.
-- [ ] **App:** navigate to the nearest free kerb; save "where I parked" with an expiry reminder.
-- [ ] **App:** ship as an installable PWA or native app. Serve map tiles and Overpass from our own or paid
-      infrastructure; the public endpoints have usage policies that a production app would break.
+Before production:
+- Replace the public Overpass, Nominatim and OSM tile servers with our own or paid services. Their usage policies
+  don't allow app-scale traffic.
+- Serve pre-merged rule tiles from a backend (see the strategy doc).
+- Evaluate times in UK local time, and load bank holidays from the gov.uk bank-holidays feed. Today `PH` rules
+  are treated as if no day is a bank holiday.
 
 ## Data and licensing
 
-Map data © OpenStreetMap contributors, [ODbL](https://www.openstreetmap.org/copyright). Each kerb's popup
-links to the OSM object so users can fix wrong or missing rules at the source. The app is a guide only: the
-signs on the street always take precedence.
+Map data © OpenStreetMap contributors, [ODbL](https://www.openstreetmap.org/copyright). Every popup links to the
+OSM object so users can correct it. The app is a guide only: signs and road markings always take priority.

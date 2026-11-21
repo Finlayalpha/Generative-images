@@ -1,97 +1,104 @@
 import type { LatLon, ParkingData } from '../data/overpass';
-import { offsetLine } from '../geo/offset';
-import { distanceM, lengthWithin, midpoint, nearestOnLine, sideCompass, splitLine } from '../geo/measure';
-import { assessCarPark, assessStreetSide, type Assessment, type Side, type StayWindow, type Tags } from '../rules/engine';
-import { estimateCarParkCapacity, estimateKerbCapacity, likelihood, type Likelihood, type PlaceKind } from './likelihood';
+import { distanceM, midpoint, nearestOnLine, splitLine } from '../geo/measure';
+import { assessCarPark, type Assessment, type StayWindow, type Tags } from '../rules/engine';
+import { buildKerbs, type Source } from '../uk/kerbs';
+import { buildZones } from '../uk/zones';
+import { carParkFit, type Fit, type Vehicle } from '../vehicle';
 
-export const KERB_OFFSET_M = 4;
-
-/** Long kerbs are split into blocks of at most this length, each ranked on its own. */
+/** Long kerbs are split into blocks of at most this length, each listed on its own. */
 export const KERB_BLOCK_M = 100;
 
 /**
- * Distance at which a result's score drops to 1/e (~37%). A spot this much further
- * away has to be ~2.7× as likely to rank level with the nearer one.
+ * How sure we are about the rules:
+ *   confirmed  — fee and restrictions mapped explicitly
+ *   partial    — parking mapped, but not every rule (e.g. no fee tag)
+ *   unsurveyed — no local rules mapped; only national rules applied
  */
-export const DISTANCE_SCALE_M = 400;
+export type Tier = 'confirmed' | 'partial' | 'unsurveyed';
+export const TIER_ORDER: Tier[] = ['confirmed', 'partial', 'unsurveyed'];
 
-export type SortMode = 'best' | 'nearest' | 'likely';
+export type SortMode = 'nearest' | 'certain';
 
 export interface Place {
   id: string;
-  kind: PlaceKind;
+  kind: 'kerb' | 'car_park';
   name: string;
-  /** e.g. "east side" for kerbs. */
   detail?: string;
-  /** Kerb line (already offset to the correct side) or a single car-park point. */
   geometry: LatLon[];
   /** Closest point to the destination. */
   point: LatLon;
-  /** Where to put a map label: middle of the block, or the car park. */
+  /** Where to put a map label. */
   labelPoint: LatLon;
   distance: number;
   assessment: Assessment;
+  source: Source;
+  tier: Tier;
+  fit: Fit;
   tags: Tags;
   osmUrl: string;
 }
 
-export interface Result extends Place {
-  likelihood: Likelihood;
-  score: number;
+export interface SearchOptions {
+  destination: LatLon;
+  radiusM: number;
+  stay: StayWindow;
+  vehicle: Vehicle;
+  includeUnsurveyed: boolean;
 }
 
 export interface SearchOutcome {
   /** Everything evaluated, for drawing on the map. */
   places: Place[];
-  /** Free & legal places within the radius, unsorted. */
-  results: Result[];
+  /** Free, legal places in range that the vehicle fits. Unsorted. */
+  results: Place[];
 }
 
-export function evaluate(data: ParkingData, destination: LatLon, radiusM: number, stay: StayWindow): SearchOutcome {
+function tierOf(source: Source, a: Assessment): Tier {
+  if (source === 'inferred') return 'unsurveyed';
+  return a.confidence === 'high' ? 'confirmed' : 'partial';
+}
+
+export function isResult(p: Place, opts: SearchOptions): boolean {
+  return (
+    p.assessment.status === 'free' &&
+    p.fit.verdict !== 'too_big' &&
+    p.distance <= opts.radiusM &&
+    (opts.includeUnsurveyed || p.tier !== 'unsurveyed')
+  );
+}
+
+export function evaluate(data: ParkingData, opts: SearchOptions): SearchOutcome {
+  const { destination, stay, vehicle } = opts;
   const places: Place[] = [];
-  const results: Result[] = [];
 
-  for (const way of data.streets) {
-    for (const side of ['left', 'right'] as Side[]) {
-      const assessment = assessStreetSide(way.tags, side, stay);
-      if (assessment.status === 'unknown') continue;
-      if (way.tags[`parking:${side}`] === 'separate') continue;
-      const kerb = offsetLine(way.geometry, side === 'right' ? KERB_OFFSET_M : -KERB_OFFSET_M);
-      const blocks = splitLine(kerb, KERB_BLOCK_M);
-      blocks.forEach((geometry, i) => {
-        const near = nearestOnLine(geometry, destination);
-        const place: Place = {
-          id: `w${way.id}:${side}${blocks.length > 1 ? `:${i}` : ''}`,
-          kind: 'kerb',
-          name: way.tags['name'] ?? 'Unnamed street',
-          detail: `${sideCompass(way.geometry, side)} side`,
-          geometry,
-          point: near.point,
-          labelPoint: midpoint(geometry),
-          distance: near.distance,
-          assessment,
-          tags: way.tags,
-          osmUrl: `https://www.openstreetmap.org/way/${way.id}`,
-        };
-        places.push(place);
-
-        if (assessment.status !== 'free' || near.distance > radiusM) return;
-        const tagged = way.tags[`parking:${side}:capacity`] ?? way.tags['parking:both:capacity'];
-        const inRange = lengthWithin(geometry, destination, radiusM);
-        // A tagged capacity covers the whole way; share it out by length.
-        const share = tagged !== undefined ? String(Math.round((Number(tagged) * inRange) / Math.max(1, lineLength(kerb)))) : undefined;
-        const cap = estimateKerbCapacity(inRange, assessment.orientation, share);
-        if (cap.capacity <= 0) return;
-        const lk = likelihood('kerb', assessment.confidence, cap.capacity, cap.known, stay.start);
-        results.push({ ...place, likelihood: lk, score: score(lk.probability, near.distance) });
+  const zones = buildZones(data);
+  for (const piece of buildKerbs(data, zones, stay, vehicle)) {
+    // Split parkable kerbs into blocks so each result points at a specific stretch.
+    const blocks = piece.assessment.status === 'no_parking' ? [piece.geometry] : splitLine(piece.geometry, KERB_BLOCK_M);
+    blocks.forEach((geometry, i) => {
+      const near = nearestOnLine(geometry, destination);
+      places.push({
+        id: blocks.length > 1 ? `${piece.id}:b${i}` : piece.id,
+        kind: 'kerb',
+        name: piece.name,
+        detail: piece.detail,
+        geometry,
+        point: near.point,
+        labelPoint: midpoint(geometry),
+        distance: near.distance,
+        assessment: piece.assessment,
+        source: piece.source,
+        tier: tierOf(piece.source, piece.assessment),
+        fit: piece.fit,
+        tags: piece.tags,
+        osmUrl: `https://www.openstreetmap.org/way/${piece.wayId}`,
       });
-    }
+    });
   }
 
   for (const cp of data.carParks) {
     const assessment = assessCarPark(cp.tags, stay);
-    const distance = distanceM(cp.center, destination);
-    const place: Place = {
+    places.push({
       id: `${cp.type[0]}${cp.id}`,
       kind: 'car_park',
       name: cp.tags['name'] ?? 'Car park',
@@ -99,36 +106,24 @@ export function evaluate(data: ParkingData, destination: LatLon, radiusM: number
       geometry: [cp.center],
       point: cp.center,
       labelPoint: cp.center,
-      distance,
+      distance: distanceM(cp.center, destination),
       assessment,
+      source: 'mapped',
+      tier: tierOf('mapped', assessment),
+      fit: carParkFit(vehicle, cp.tags),
       tags: cp.tags,
       osmUrl: `https://www.openstreetmap.org/${cp.type}/${cp.id}`,
-    };
-    places.push(place);
-    if (assessment.status !== 'free' || distance > radiusM) continue;
-    const cap = estimateCarParkCapacity(cp.tags['capacity']);
-    const lk = likelihood('car_park', assessment.confidence, cap.capacity, cap.known, stay.start);
-    results.push({ ...place, likelihood: lk, score: score(lk.probability, distance) });
+    });
   }
 
-  return { places, results };
+  return { places, results: places.filter((p) => isResult(p, opts)) };
 }
 
-function lineLength(line: LatLon[]): number {
-  let total = 0;
-  for (let i = 1; i < line.length; i++) total += distanceM(line[i - 1]!, line[i]!);
-  return total;
-}
-
-export function score(probability: number, distanceM: number): number {
-  return probability * Math.exp(-distanceM / DISTANCE_SCALE_M);
-}
-
-export function sortResults(results: Result[], mode: SortMode): Result[] {
-  const key: Record<SortMode, (a: Result, b: Result) => number> = {
-    best: (a, b) => b.score - a.score || a.distance - b.distance,
-    nearest: (a, b) => a.distance - b.distance || b.likelihood.probability - a.likelihood.probability,
-    likely: (a, b) => b.likelihood.probability - a.likelihood.probability || a.distance - b.distance,
-  };
-  return [...results].sort(key[mode]);
+export function sortResults(results: Place[], mode: SortMode): Place[] {
+  const tierRank = (p: Place) => TIER_ORDER.indexOf(p.tier);
+  const cmp =
+    mode === 'nearest'
+      ? (a: Place, b: Place) => a.distance - b.distance || tierRank(a) - tierRank(b)
+      : (a: Place, b: Place) => tierRank(a) - tierRank(b) || a.distance - b.distance;
+  return [...results].sort(cmp);
 }
