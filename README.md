@@ -2,9 +2,10 @@
 
 Find **free, legal** places to park for the time you plan to stay.
 
-You choose when you'll arrive and how long you'll stay. The app colours each side of every mapped street by
-whether parking there is free and legal for that whole stay. If a fee, a clearway or a residents-only period
-starts halfway through, the kerb doesn't count as free.
+You enter where you're going, when you'll arrive and how long you'll stay. The app lists the free, legal places
+within walking distance, ranked by distance and by how likely you are to get a space. A kerb only counts as
+free if it stays free and legal for your whole stay: if a fee, a clearway or a residents-only period starts
+halfway through, it is left out.
 
 ```
 npm install
@@ -14,18 +15,42 @@ npm test             # rules-engine unit tests
 npm run build        # static site in dist/
 ```
 
-## How it works (v0.1)
+## How it works
 
 ```
- map viewport ──► Overpass API (OSM) ──► street ways with parking:* tags
-                                          + amenity=parking car parks
-                                                   │
- arrive time + stay length ───────────────► rules engine ──► per-kerb status
-                                                   │            free / time-limited / paid /
-                                                   │            permit / restricted / no parking
-                                                   ▼
-                                          Leaflet map, left & right kerbs drawn separately
+ "where to?" ──► Nominatim geocoder ──► destination point
+                                             │ + radius (200 m … 1.5 km)
+                                             ▼
+                          Overpass API (OSM): street ways with parking:* tags
+                                              + amenity=parking car parks
+                                             │
+ arrive time + stay ──► rules engine ──► each kerb side: free / time-limited / paid /
+                                             │            permit / restricted / no parking
+                                             ▼
+                     split kerbs into ≤100 m blocks ──► distance + likelihood per block
+                                             │
+                                             ▼
+                     ranked list (best match / nearest / most likely) + map
 ```
+
+### Ranking
+
+Each free and legal block of kerb, and each free car park, within the radius becomes one result:
+
+* **Distance:** straight line from the destination to the nearest point of the block. Walking time is
+  estimated as distance × 1.3 at 80 m/min. The list also shows the direction, e.g. "40 m N".
+* **Likelihood** = P(the mapped rules are right) × P(at least one space is empty)
+  (`src/search/likelihood.ts`).
+  * Rules: 95% when fee and restrictions are mapped explicitly, 75% when the fee isn't mapped, 50% when a
+    condition couldn't be evaluated.
+  * Space: `1 − occupancy^spaces`. The space count comes from the `capacity` tag, or else from kerb length
+    (6 m per car parallel, 3.5 m diagonal, 2.8 m perpendicular).
+  * **The occupancy rates are placeholder assumptions** (about 90% on-street, varying by time of day). This
+    is the function to replace with real data.
+* **Best match** = likelihood × e^(−distance / 400 m). A spot 400 m further away has to be about 2.7× as likely
+  to rank level with the nearer one. *Nearest* and *Most likely* sort on one factor only.
+
+### Rules
 
 * **Regulations come from OpenStreetMap's [street parking scheme](https://wiki.openstreetmap.org/wiki/Street_parking)**
   (`parking:left|right|both`, `…:fee`, `…:maxstay`, `…:access`, `…:restriction`, `…:zone`,
@@ -47,10 +72,14 @@ Code map:
 | `src/rules/engine.ts` | Core logic: `assessStreetSide()` and `assessCarPark()` |
 | `src/rules/conditional.ts` | Parses and evaluates `value @ (condition); …` |
 | `src/rules/legacy.ts` | Translates the old `parking:lane` scheme |
-| `src/data/overpass.ts` | Overpass query and response parsing |
-| `src/geo/offset.ts` | Offsets a street line to its left or right kerb |
-| `src/main.ts` | Map UI |
+| `src/search/rank.ts` | Turns parking data into ranked results: blocks, distance, likelihood, score, sort |
+| `src/search/likelihood.ts` | Space-count estimate and availability model (placeholder occupancy) |
+| `src/search/geocode.ts` | Address and place search (Nominatim) |
+| `src/data/overpass.ts` | Overpass radius query and response parsing |
+| `src/geo/offset.ts`, `src/geo/measure.ts` | Kerb offsetting, distances, splitting into blocks, compass labels |
+| `src/main.ts` | UI: search panel (a bottom sheet on phones), ranked list, map |
 | `test/engine.test.ts` | Scenarios: pay-and-display, clearways, residents zones, disc zones, legacy tags, car parks |
+| `test/search.test.ts` | Geometry, likelihood and ranking |
 
 ## About satellite data
 
@@ -92,7 +121,11 @@ Better sources of real-time availability, roughly in order of how practical they
 - [ ] **Rules:** evaluate in the destination's time zone. Today the browser's local time is used.
 - [ ] **Rules:** vehicle profile (EV, motorbike, blue badge, van height and weight).
 - [ ] **Availability:** crowdsourced "leaving now" signals and a backend.
-- [ ] **Availability:** occupancy prediction.
+- [ ] **Availability:** replace the placeholder `occupancyRate()` with predictions from real data.
+- [ ] **Ranking:** use walking-route distance instead of straight-line distance; split kerbs at junctions
+      instead of every ~100 m.
+- [ ] **Search:** autocomplete with a geocoder that allows it (Nominatim's public instance doesn't), and
+      keep the search in the URL so results can be shared.
 - [ ] **App:** navigate to the nearest free kerb; save "where I parked" with an expiry reminder.
 - [ ] **App:** ship as an installable PWA or native app. Serve map tiles and Overpass from our own or paid
       infrastructure; the public endpoints have usage policies that a production app would break.

@@ -9,12 +9,21 @@
   <body>
     <div id="map" aria-label="Map"></div>
 
-    <aside id="panel" aria-label="Search">
+    <aside id="panel" aria-label="Find parking">
       <header>
         <h1>Free Parking Finder</h1>
         <button id="collapse" class="icon" aria-expanded="true" aria-controls="panel-body" title="Hide panel">▾</button>
       </header>
       <div id="panel-body">
+        <form id="search-form" role="search">
+          <label for="q">Where do you want to park?</label>
+          <div class="search">
+            <input id="q" type="search" placeholder="Address, place or postcode" autocomplete="off" required />
+            <button class="primary" type="submit">Find</button>
+          </div>
+          <button id="locate" type="button" class="link">Or park near my location</button>
+        </form>
+
         <div class="row">
           <label>Arrive
             <input id="arrive" type="datetime-local" />
@@ -32,12 +41,40 @@
           </label>
         </div>
         <div class="row">
-          <button id="search" class="primary">Search this area</button>
-          <button id="locate" title="Use my location">Locate me</button>
+          <label>Within
+            <select id="radius">
+              <option value="200">200 m (~3 min walk)</option>
+              <option value="400" selected>400 m (~5 min walk)</option>
+              <option value="800">800 m (~10 min walk)</option>
+              <option value="1500">1.5 km (~20 min walk)</option>
+            </select>
+          </label>
+          <label>Sort by
+            <select id="sort">
+              <option value="best" selected>Best match</option>
+              <option value="nearest">Nearest</option>
+              <option value="likely">Most likely</option>
+            </select>
+          </label>
         </div>
-        <label class="check"><input id="only-free" type="checkbox" /> Only show free spots</label>
-        <ul id="legend"></ul>
+
         <p id="status" role="status"></p>
+        <ol id="results" aria-label="Parking results"></ol>
+
+        <details class="info">
+          <summary>Map key</summary>
+          <ul id="legend"></ul>
+        </details>
+        <details class="info">
+          <summary>How results are ranked</summary>
+          <p>
+            Only places that are <strong>free and legal for your whole stay</strong> are listed.
+            <em>Likelihood</em> = chance the mapped rules are right × chance at least one space is empty.
+            Space counts are estimated from kerb length when not mapped, and occupancy is an assumption
+            until real-time data is added. <em>Best match</em> balances both: a spot 400 m further away needs to be
+            about 2.7× as likely to rank the same.
+          </p>
+        </details>
         <p class="fine">
           Regulations from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>
           contributors. Always check the signs on the street: data may be missing or out of date.

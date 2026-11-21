@@ -68,7 +68,7 @@ function grid(): StreetWay[] {
 export const DEMO_DATA: ParkingData = {
   streets: grid(),
   carParks: [
-    { id: 100, type: 'node', center: { lat: 51.5009, lon: -0.1225 }, tags: { amenity: 'parking', name: 'Free car park', fee: 'no', access: 'yes', opening_hours: '06:00-22:00' } },
+    { id: 100, type: 'node', center: { lat: 51.5009, lon: -0.1225 }, tags: { amenity: 'parking', name: 'Free car park', fee: 'no', access: 'yes', capacity: '40', opening_hours: '06:00-22:00' } },
     { id: 101, type: 'node', center: { lat: 51.4991, lon: -0.1175 }, tags: { amenity: 'parking', name: 'Supermarket', access: 'customers', maxstay: '2 hours' } },
     { id: 102, type: 'node', center: { lat: 51.5009, lon: -0.1175 }, tags: { amenity: 'parking', name: 'Pay car park', fee: 'yes' } },
   ],

@@ -2,10 +2,12 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import './style.css';
 
-import { fetchParking, type ParkingData, type BBox } from './data/overpass';
+import { buildAroundQuery, fetchParking, type LatLon, type ParkingData } from './data/overpass';
 import { DEMO_CENTER, DEMO_DATA } from './data/demo';
-import { offsetLine } from './geo/offset';
-import { assessCarPark, assessStreetSide, type Assessment, type Side, type Status, type Tags } from './rules/engine';
+import { geocode } from './search/geocode';
+import { evaluate, sortResults, type Place, type Result, type SortMode } from './search/rank';
+import type { Assessment, Status } from './rules/engine';
+import { directionTo } from './geo/measure';
 import { formatMinutes } from './rules/duration';
 
 const STATUS_STYLE: Record<Status, { color: string; label: string }> = {
@@ -18,33 +20,54 @@ const STATUS_STYLE: Record<Status, { color: string; label: string }> = {
   unknown: { color: '#9ca3af', label: 'Not mapped' },
 };
 
-const MIN_SEARCH_ZOOM = 15;
-const KERB_OFFSET_M = 4;
-
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const form = $<HTMLFormElement>('search-form');
+const qInput = $<HTMLInputElement>('q');
 const arriveInput = $<HTMLInputElement>('arrive');
 const stayInput = $<HTMLSelectElement>('stay');
-const onlyFree = $<HTMLInputElement>('only-free');
+const radiusInput = $<HTMLSelectElement>('radius');
+const sortInput = $<HTMLSelectElement>('sort');
 const statusEl = $<HTMLParagraphElement>('status');
-const searchBtn = $<HTMLButtonElement>('search');
+const resultsEl = $<HTMLOListElement>('results');
 const isDemo = new URLSearchParams(location.search).has('demo');
+
+// ---------- state ----------
+interface Destination {
+  label: string;
+  location: LatLon;
+}
+let destination: Destination | null = null;
+let data: ParkingData | null = null;
+let fetchedRadius = 0;
+let inflight: AbortController | null = null;
+const layersById = new Map<string, L.Path>();
+const LIST_LIMIT = 15;
+const PIN_LIMIT = 10;
+let showAll = false;
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false }).setView(
   isDemo ? [DEMO_CENTER.lat, DEMO_CENTER.lon] : [51.5074, -0.1278],
-  16,
+  isDemo ? 16 : 13,
 );
-L.control.zoom({ position: 'bottomright' }).addTo(map);
+L.control.zoom({ position: 'topright' }).addTo(map);
 if (!isDemo) {
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }).addTo(map);
 }
-const layer = L.layerGroup().addTo(map);
+const placesLayer = L.layerGroup().addTo(map);
+const destLayer = L.layerGroup().addTo(map);
+const rankLayer = L.layerGroup().addTo(map);
+const isPhone = () => window.matchMedia('(max-width: 640px)').matches;
 
-let data: ParkingData | null = null;
-let inflight: AbortController | null = null;
+/** Fit the map to bounds while keeping them clear of the panel / bottom sheet. */
+function fitVisible(bounds: L.LatLngBounds) {
+  const panel = $('panel').getBoundingClientRect();
+  if (isPhone()) map.fitBounds(bounds, { paddingTopLeft: [12, 12], paddingBottomRight: [12, panel.height + 12] });
+  else map.fitBounds(bounds, { paddingTopLeft: [panel.right + 12, 12], paddingBottomRight: [12, 12] });
+}
 
 // ---------- controls ----------
 function toLocalInputValue(d: Date): string {
@@ -57,6 +80,7 @@ function stayWindow() {
   const start = arriveInput.value ? new Date(arriveInput.value) : new Date();
   return { start, minutes: Number(stayInput.value) };
 }
+const radius = () => Number(radiusInput.value);
 
 const legend = $<HTMLUListElement>('legend');
 for (const s of ['free', 'time_limited', 'paid', 'permit', 'restricted', 'no_parking'] as Status[]) {
@@ -64,98 +88,168 @@ for (const s of ['free', 'time_limited', 'paid', 'permit', 'restricted', 'no_par
   li.innerHTML = `<span class="swatch" style="background:${STATUS_STYLE[s].color}"></span>${STATUS_STYLE[s].label}`;
   legend.append(li);
 }
+const dashed = document.createElement('li');
+dashed.innerHTML = '<span class="swatch dashed"></span>Dashed: fee not mapped, assumed free';
+legend.append(dashed);
 
-$<HTMLButtonElement>('collapse').addEventListener('click', (e) => {
-  const btn = e.currentTarget as HTMLButtonElement;
-  const open = btn.getAttribute('aria-expanded') !== 'true';
+$<HTMLButtonElement>('collapse').addEventListener('click', (e) => togglePanel(e.currentTarget as HTMLButtonElement));
+function togglePanel(btn: HTMLButtonElement, open = btn.getAttribute('aria-expanded') !== 'true') {
   btn.setAttribute('aria-expanded', String(open));
   btn.textContent = open ? '▾' : '▸';
   $('panel-body').hidden = !open;
-});
+}
 
-// ---------- rendering ----------
+// ---------- formatting ----------
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
+const pct = (p: number) => `${Math.round(p * 100)}%`;
+const metres = (m: number) => (m < 10 ? '<10 m' : m < 1000 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(1)} km`);
+/** Straight-line distance × 1.3 ≈ street walking distance, at ~80 m/min. */
+const walkMin = (m: number) => Math.max(1, Math.round((m * 1.3) / 80));
 
-function popupHtml(title: string, a: Assessment, tags: Tags, osmUrl: string): string {
+function freeForText(a: Assessment): string | undefined {
+  if (a.freeForMinutes === undefined || a.status === 'no_parking') return undefined;
+  if (a.freeForMinutes >= 24 * 60) return 'Free & legal for 24h+ from arrival';
+  if (a.freeForMinutes === 0) return 'Not free & legal at arrival time';
+  return `Free & legal for ${formatMinutes(a.freeForMinutes)} from arrival`;
+}
+
+function popupHtml(p: Place, r?: Result): string {
+  const a = p.assessment;
   const style = STATUS_STYLE[a.status];
-  const lines: string[] = [];
-  if (a.freeForMinutes !== undefined && a.status !== 'no_parking') {
-    lines.push(
-      a.freeForMinutes >= 24 * 60
-        ? 'Free & legal for 24h+ from arrival'
-        : a.freeForMinutes === 0
-          ? 'Not free & legal at arrival time'
-          : `Free & legal for ${formatMinutes(a.freeForMinutes)} from arrival`,
-    );
-  }
-  lines.push(...a.reasons);
-  const raw = Object.entries(tags)
-    .filter(([k]) => k.startsWith('parking') || ['fee', 'access', 'maxstay', 'opening_hours', 'name', 'highway'].includes(k.split(':')[0]!))
+  const lines = [freeForText(a), ...a.reasons].filter(Boolean) as string[];
+  if (destination) lines.unshift(`${metres(p.distance)} from destination (~${walkMin(p.distance)} min walk)`);
+  const chance = r
+    ? `<div class="chance"><strong>${pct(r.likelihood.probability)}</strong> chance you can park here
+        <small>rules correct ~${pct(r.likelihood.legal)} × space free ~${pct(r.likelihood.available)}
+        (${r.likelihood.capacityKnown ? '' : '~'}${r.likelihood.capacity} spaces)</small></div>`
+    : '';
+  const raw = Object.entries(p.tags)
+    .filter(([k]) => k.startsWith('parking') || ['fee', 'access', 'maxstay', 'opening_hours', 'name', 'highway', 'capacity'].includes(k.split(':')[0]!))
     .map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v)}</td></tr>`)
     .join('');
   return `<div class="popup">
-    <strong>${escapeHtml(title)}</strong>
+    <strong>${escapeHtml(p.name)}</strong>${p.detail ? ` <span class="muted">· ${escapeHtml(p.detail)}</span>` : ''}
     <div class="badge" style="background:${style.color}">${style.label}</div>
-    <div class="conf">Data confidence: ${a.confidence}</div>
+    ${chance}
     <ul>${lines.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>
+    <div class="muted">Rule data confidence: ${a.confidence}</div>
     <details><summary>OSM tags</summary><table>${raw}</table></details>
-    <a href="${osmUrl}" target="_blank" rel="noopener">View / fix on OpenStreetMap</a>
+    <a href="${p.osmUrl}" target="_blank" rel="noopener">View / fix on OpenStreetMap</a>
   </div>`;
 }
 
+// ---------- rendering ----------
 function render() {
-  layer.clearLayers();
-  if (!data) return;
-  const stay = stayWindow();
-  const counts: Partial<Record<Status, number>> = {};
+  placesLayer.clearLayers();
+  rankLayer.clearLayers();
+  layersById.clear();
+  resultsEl.replaceChildren();
+  if (!data || !destination) return;
 
-  for (const way of data.streets) {
-    for (const side of ['left', 'right'] as Side[]) {
-      const a = assessStreetSide(way.tags, side, stay);
-      if (a.status === 'unknown') continue;
-      if (a.status === 'no_parking' && way.tags[`parking:${side}`] === 'separate') continue;
-      counts[a.status] = (counts[a.status] ?? 0) + 1;
-      if (onlyFree.checked && a.status !== 'free') continue;
-      const geom = offsetLine(way.geometry, side === 'right' ? KERB_OFFSET_M : -KERB_OFFSET_M);
-      const name = way.tags['name'] ?? 'Unnamed street';
-      L.polyline(
-        geom.map((p) => [p.lat, p.lon] as [number, number]),
-        {
-          color: STATUS_STYLE[a.status].color,
-          weight: 5,
-          opacity: a.confidence === 'low' ? 0.55 : 0.9,
-          dashArray: a.confidence === 'high' ? undefined : '8 6',
-        },
-      )
-        .bindPopup(popupHtml(`${name} (${side} side)`, a, way.tags, `https://www.openstreetmap.org/way/${way.id}`))
-        .addTo(layer);
-    }
+  const { places, results } = evaluate(data, destination.location, radius(), stayWindow());
+  const sorted = sortResults(results, sortInput.value as SortMode);
+  const resultById = new Map(results.map((r) => [r.id, r]));
+
+  for (const p of places) {
+    const r = resultById.get(p.id);
+    const color = STATUS_STYLE[p.assessment.status].color;
+    const layer: L.Path =
+      p.kind === 'kerb'
+        ? L.polyline(p.geometry.map((g) => [g.lat, g.lon] as [number, number]), {
+            color,
+            weight: r ? 6 : 4,
+            opacity: r ? 0.95 : 0.6,
+            dashArray: p.assessment.confidence === 'high' ? undefined : '8 6',
+          })
+        : L.circleMarker([p.point.lat, p.point.lon], { radius: r ? 10 : 7, color: '#fff', weight: 2, fillColor: color, fillOpacity: 0.95 });
+    layer.bindPopup(popupHtml(p, r), { autoPanPaddingTopLeft: L.point(12, 12) }).addTo(placesLayer);
+    layersById.set(p.id, layer);
   }
 
-  for (const cp of data.carParks) {
-    const a = assessCarPark(cp.tags, stay);
-    counts[a.status] = (counts[a.status] ?? 0) + 1;
-    if (onlyFree.checked && a.status !== 'free') continue;
-    L.circleMarker([cp.center.lat, cp.center.lon], {
-      radius: 9,
-      color: '#fff',
-      weight: 2,
-      fillColor: STATUS_STYLE[a.status].color,
-      fillOpacity: 0.95,
+  const shown = showAll ? sorted : sorted.slice(0, LIST_LIMIT);
+  shown.forEach((r, i) => {
+    resultsEl.append(resultItem(r, i + 1));
+    if (i >= PIN_LIMIT) return;
+    L.marker([r.labelPoint.lat, r.labelPoint.lon], {
+      icon: L.divIcon({ className: 'rank-pin', html: String(i + 1), iconSize: [22, 22] }),
+      title: `${i + 1}. ${r.name}`,
+      zIndexOffset: 1000 - i,
     })
-      .bindPopup(popupHtml(cp.tags['name'] ?? 'Car park', a, cp.tags, `https://www.openstreetmap.org/${cp.type}/${cp.id}`))
-      .addTo(layer);
+      .on('click', () => focusPlace(r))
+      .addTo(rankLayer);
+  });
+  if (shown.length < sorted.length) {
+    const li = document.createElement('li');
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'link';
+    more.textContent = `Show all ${sorted.length} results`;
+    more.addEventListener('click', () => {
+      showAll = true;
+      render();
+    });
+    li.append(more);
+    resultsEl.append(li);
   }
 
-  const free = counts.free ?? 0;
-  const total = Object.values(counts).reduce((s, n) => s + (n ?? 0), 0);
-  setStatus(
-    total === 0
-      ? 'No mapped parking regulations here yet. Try a city centre, or add them on OpenStreetMap.'
-      : `${free} free & legal of ${total} mapped kerbs/car parks for this stay.${isDemo ? ' (Synthetic demo data.)' : ''}`,
-  );
+  if (sorted.length === 0) {
+    setStatus(
+      places.length === 0
+        ? `No parking rules are mapped within ${metres(radius())} of ${destination.label} yet. Try a larger radius, or help by mapping them on OpenStreetMap.`
+        : `Nothing free & legal for this stay within ${metres(radius())}. Try a larger radius, a shorter stay or a different time.`,
+    );
+  } else {
+    setStatus(`${sorted.length} free & legal option${sorted.length === 1 ? '' : 's'} near ${destination.label}${isDemo ? ' (synthetic demo data)' : ''}.`);
+  }
+}
+
+function resultItem(r: Result, rank: number): HTMLLIElement {
+  const li = document.createElement('li');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'result';
+  const notes: string[] = [];
+  if (r.assessment.maxStayMinutes !== undefined) notes.push(`max ${formatMinutes(r.assessment.maxStayMinutes)}`);
+  if (r.assessment.needsDisc) notes.push('disc');
+  if (r.assessment.confidence !== 'high') notes.push(r.assessment.confidence === 'medium' ? 'fee not mapped' : 'check signs');
+  if (r.kind === 'car_park') notes.unshift('car park');
+  btn.innerHTML = `
+    <span class="rank">${rank}</span>
+    <span class="main">
+      <span class="name">${escapeHtml(r.name)}${r.kind === 'kerb' ? ` <span class="muted">${escapeHtml(r.detail ?? '')}</span>` : ''}</span>
+      <span class="meta">${metres(r.distance)}${r.distance >= 10 && destination ? ` ${directionTo(destination.location, r.point)}` : ''} · ~${walkMin(r.distance)} min walk${notes.length ? ` · ${escapeHtml(notes.join(' · '))}` : ''}</span>
+    </span>
+    <span class="prob" title="Estimated chance you can park here">
+      <span class="pct">${pct(r.likelihood.probability)}</span>
+      <span class="bar"><span style="width:${pct(r.likelihood.probability)}"></span></span>
+    </span>`;
+  btn.addEventListener('click', () => focusPlace(r));
+  li.append(btn);
+  return li;
+}
+
+function focusPlace(r: Result) {
+  const layer = layersById.get(r.id);
+  map.setView([r.labelPoint.lat, r.labelPoint.lon], Math.max(map.getZoom(), 17));
+  layer?.openPopup([r.labelPoint.lat, r.labelPoint.lon]);
+  if (isPhone()) togglePanel($<HTMLButtonElement>('collapse'), false);
+}
+
+function drawDestination() {
+  destLayer.clearLayers();
+  if (!destination) return;
+  const { lat, lon } = destination.location;
+  L.circle([lat, lon], { radius: radius(), color: '#0f766e', weight: 1, fillOpacity: 0.04, interactive: false }).addTo(destLayer);
+  L.marker([lat, lon], { title: destination.label, icon: L.divIcon({ className: 'dest-pin', html: '<span></span>', iconSize: [22, 22], iconAnchor: [11, 22] }) })
+    .bindTooltip(destination.label)
+    .addTo(destLayer);
+}
+
+/** On phones the controls fill the sheet; jump to the results after a search. */
+function revealResults() {
+  if (isPhone()) statusEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
 
 function setStatus(msg: string, busy = false) {
@@ -163,51 +257,76 @@ function setStatus(msg: string, busy = false) {
   statusEl.classList.toggle('busy', busy);
 }
 
-// ---------- data ----------
-async function search() {
+// ---------- flow ----------
+async function loadAround(dest: Destination) {
+  destination = dest;
+  showAll = false;
+  drawDestination();
+  const r = radius();
+  const c = dest.location;
+  fitVisible(L.latLng(c.lat, c.lon).toBounds(r * 2.2));
+
   if (isDemo) {
     data = DEMO_DATA;
+    fetchedRadius = Infinity;
     render();
+    revealResults();
     return;
   }
-  if (map.getZoom() < MIN_SEARCH_ZOOM) {
-    setStatus('Zoom in a bit further to search (street level).');
-    return;
-  }
+
   inflight?.abort();
-  inflight = new AbortController();
-  const b = map.getBounds();
-  const bbox: BBox = { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() };
-  setStatus('Loading parking regulations…', true);
-  searchBtn.disabled = true;
+  const ctrl = (inflight = new AbortController());
+  setStatus('Loading parking rules…', true);
+  resultsEl.replaceChildren();
+  placesLayer.clearLayers();
+  rankLayer.clearLayers();
   try {
-    data = await fetchParking(bbox, inflight.signal);
+    data = await fetchParking(buildAroundQuery(c, r), ctrl.signal);
+    fetchedRadius = r;
     render();
+    revealResults();
   } catch (e) {
-    if ((e as Error).name !== 'AbortError') setStatus(`Couldn't load data: ${(e as Error).message}`);
-  } finally {
-    searchBtn.disabled = false;
+    if (!ctrl.signal.aborted) setStatus(`Couldn't load parking data: ${(e as Error).message}. Please try again.`);
   }
 }
 
-searchBtn.addEventListener('click', search);
-arriveInput.addEventListener('change', render);
-stayInput.addEventListener('change', render);
-onlyFree.addEventListener('change', render);
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = qInput.value.trim();
+  if (!q) return;
+  if (isDemo) {
+    await loadAround({ label: q, location: DEMO_CENTER });
+    return;
+  }
+  setStatus(`Finding “${q}”…`, true);
+  try {
+    const c = map.getCenter();
+    const hits = await geocode(q, { near: { lat: c.lat, lon: c.lng } });
+    const first = hits[0];
+    if (!first) return setStatus(`Couldn't find “${q}”. Try adding a town or postcode.`);
+    await loadAround({ label: first.label.split(',').slice(0, 2).join(',').trim(), location: first.location });
+  } catch (err) {
+    setStatus(`Search failed: ${(err as Error).message}`);
+  }
+});
 
 $<HTMLButtonElement>('locate').addEventListener('click', () => {
+  if (isDemo) return void loadAround({ label: 'your location', location: DEMO_CENTER });
   if (!navigator.geolocation) return setStatus('Location is not available in this browser.');
   setStatus('Finding you…', true);
   navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      map.setView([pos.coords.latitude, pos.coords.longitude], 17);
-      L.circleMarker([pos.coords.latitude, pos.coords.longitude], { radius: 6, color: '#0f766e', fillOpacity: 1 }).addTo(map);
-      search();
-    },
+    (pos) => loadAround({ label: 'your location', location: { lat: pos.coords.latitude, lon: pos.coords.longitude } }),
     (err) => setStatus(`Couldn't get your location: ${err.message}`),
     { enableHighAccuracy: true, timeout: 10_000 },
   );
 });
 
-if (isDemo) search();
-else setStatus('Pan to an area and press “Search this area”, or use “Locate me”.');
+radiusInput.addEventListener('change', () => {
+  if (!destination) return;
+  if (radius() > fetchedRadius) return void loadAround(destination);
+  drawDestination();
+  render();
+});
+for (const el of [arriveInput, stayInput, sortInput]) el.addEventListener('change', render);
+
+setStatus(isDemo ? 'Demo mode: search any text to load synthetic streets.' : 'Enter where you are going to see free, legal parking nearby.');
