@@ -1,93 +1,104 @@
-# Particle Lenia — a living wallpaper
+# Free Parking Finder
 
-A hands-off, **perpetually moving** generative wallpaper built on **Particle
-Lenia** (Mordvintsev et al., Google Research) — a particle-based descendant of
-Conway's Game of Life. One self-contained file (`index.html`), **no
-dependencies, fully offline**, **no controls or settings** — it just runs.
-Built to be a MacBook screensaver / live wallpaper.
+Find **free, legal** places to park for the time you plan to stay.
 
-## Why particles (and not a grid)
-
-Grid-based Lenia / SmoothLife settle into static spatial patterns — spots,
-labyrinths — because every cell relaxes to a steady value and the lattice
-locks into a fixed point. **Particle Lenia removes the grid entirely.** It
-simulates a fixed set of particles whose motion is a *gradient flow* on an
-energy field, so the particles are intrinsically moving and self-organize into
-living "cells" that drift, rotate, merge and split. A static lattice simply
-isn't a state the system can occupy, so it never freezes.
-
-For each particle *i*:
+You choose when you'll arrive and how long you'll stay. The app colours each side of every mapped street by
+whether parking there is free and legal for that whole stay. If a fee, a clearway or a residents-only period
+starts halfway through, the kerb doesn't count as free.
 
 ```
-U_i  = Σ_j K(|p_i − p_j|)                 Lenia field (ring kernel K)
-E(x) = R(x) − G(U(x))                      energy = repulsion − growth
-  K(r) = w_k · exp(−((r−μ_k)/σ_k)²)
-  G(u) = exp(−((u−μ_g)/σ_g)²)
-  R(x) = (c_rep/2) · Σ_j max(1 − |x−p_j|, 0)²
-dp_i/dt = −∇E(p_i)                         move down the energy gradient
+npm install
+npm run dev          # http://localhost:5173        (live OpenStreetMap data)
+                     # http://localhost:5173/?demo  (synthetic data, works offline)
+npm test             # rules-engine unit tests
+npm run build        # static site in dist/
 ```
 
-Defaults are Google Research's: `μ_k=4, σ_k=1, w_k=0.022, μ_g=0.6, σ_g=0.15,
-c_rep=1, dt=0.1`.
+## How it works (v0.1)
 
-**Active matter so it never crystallizes.** Pure gradient-flow Particle Lenia
-eventually descends into a low-energy jammed foam and stops changing. To keep it
-permanently alive, each particle also *self-propels* along a slowly-wandering
-heading (`v0`, `turn`). Active matter is physically incapable of reaching
-equilibrium, so the cells perpetually swim, collide, merge and split. Verified
-headless over ~4000 steps: cohesion holds (`meanU` steady) while the
-configuration keeps reorganizing at a constant rate (no settling).
+```
+ map viewport ──► Overpass API (OSM) ──► street ways with parking:* tags
+                                          + amenity=parking car parks
+                                                   │
+ arrive time + stay length ───────────────► rules engine ──► per-kerb status
+                                                   │            free / time-limited / paid /
+                                                   │            permit / restricted / no parking
+                                                   ▼
+                                          Leaflet map, left & right kerbs drawn separately
+```
 
-## Look
+* **Regulations come from OpenStreetMap's [street parking scheme](https://wiki.openstreetmap.org/wiki/Street_parking)**
+  (`parking:left|right|both`, `…:fee`, `…:maxstay`, `…:access`, `…:restriction`, `…:zone`,
+  `…:authentication:disc`, and their `:conditional` forms). The older `parking:lane` / `parking:condition`
+  tags are translated to the current scheme (`src/rules/legacy.ts`).
+* **Time rules** use the OSM [conditional restriction](https://wiki.openstreetmap.org/wiki/Conditional_restrictions)
+  syntax, evaluated with [`opening_hours`](https://github.com/opening-hours/opening_hours.js). Conditions such as
+  `stay > 1 hour` are also supported.
+* **The stay is sampled every 5 minutes.** Any fee, ban or permit-only period inside the stay disqualifies the
+  kerb. Max stay is counted only for the time the limit is actually in force.
+* **Every result has a confidence level.** *High*: fee and restrictions are mapped explicitly. *Medium*: there
+  is parking but no fee is mapped, so the app assumes free (drawn dashed). *Low*: some condition couldn't be
+  evaluated, e.g. `@ (snow)`.
 
-- **Static heatmap** — denser mass reads "hotter": black → indigo → crimson →
-  orange → yellow → white (inferno-style ramp), as in the Particle Lenia demos.
-- Particles are drawn as additive glow splats into a float buffer, then the heat
-  ramp is applied — giving smooth, organic, luminous "cells".
-- Pauses when the tab/window is hidden.
+Code map:
 
-## How it's built
+| Path | What |
+|---|---|
+| `src/rules/engine.ts` | Core logic: `assessStreetSide()` and `assessCarPark()` |
+| `src/rules/conditional.ts` | Parses and evaluates `value @ (condition); …` |
+| `src/rules/legacy.ts` | Translates the old `parking:lane` scheme |
+| `src/data/overpass.ts` | Overpass query and response parsing |
+| `src/geo/offset.ts` | Offsets a street line to its left or right kerb |
+| `src/main.ts` | Map UI |
+| `test/engine.test.ts` | Scenarios: pay-and-display, clearways, residents zones, disc zones, legacy tags, car parks |
 
-- **Simulation** runs on the CPU with a spatial hash for O(N) neighbour queries
-  (the kernel is short-range), on a torus so structures wrap around forever.
-  Verified headless: stable (no blow-up), `meanU → μ_g`, and motion never stops.
-- **Rendering** is WebGL2: additive point-sprite glow → `R16F` accumulation →
-  heatmap colour pass.
+## About satellite data
 
-## Run it on macOS
+Satellites **can't tell you in real time whether a space is empty**, so the app doesn't depend on them for that:
 
-The file is offline-first: once it's on disk it never touches the network.
+* **Latency and revisit.** The highest-resolution commercial satellites (about 30 cm per pixel) pass over a
+  given place a few times a day at best. Ordering, downlinking and processing the image takes hours. A space
+  that was empty in a morning image tells you nothing about now.
+* **Resolution and occlusion.** 30 cm per pixel is enough to count cars in an open car park. Kerbside spaces
+  are often hidden under trees, in building shadow or behind other vehicles, and cloud cover removes whole days.
+* **Cost and licensing.** Tasking imagery per city per hour would cost far more than an app like this could
+  earn, and redistribution licences usually forbid showing the imagery to users.
 
-### As a screensaver — [WebViewScreenSaver](https://github.com/liquidx/webviewscreensaver) (free, open source)
+Aerial and satellite imagery **is** valuable offline, for building the regulation map itself:
 
-1. Install WebViewScreenSaver from its releases page.
-2. System Settings → **Screen Saver** → **WebViewScreenSaver** → *Options*.
-3. Add a URL pointing at this file on disk, e.g.
-   `file:///Users/yourname/Generative-images/index.html` (run `pwd` here and
-   append `/index.html`).
+* Detect painted bays, yellow lines, kerb markings and parking lanes, and propose OSM `parking:*` tags where
+  none exist. This is the biggest coverage gap.
+* Estimate typical occupancy of large surface car parks by time of day, using historical imagery.
 
-### As a live desktop wallpaper — [Plash](https://github.com/sindresorhus/Plash) (free)
+Better sources of real-time availability, roughly in order of how practical they are:
 
-1. Install Plash.  2. **Open URL…** → the same `file://…/index.html` path.
-3. Set *Bring browsing level to back* so it sits behind your icons.
+1. **City open data:** on-street bay sensors (e.g. Melbourne, some Dutch and Spanish cities), meter and
+   payment feeds, and machine-readable kerb rules (CurbLR, CDS, the UK's digital Traffic Regulation Orders
+   programme).
+2. **Crowdsourcing:** "I'm leaving this space" and "I just parked" events from app users, plus passive signals
+   (a phone switches from driving to walking near a kerb).
+3. **Probabilistic prediction:** estimate the likelihood of finding a space from time, day, area and past
+   events. This is more useful than false precision.
 
-### Just to preview
+## Roadmap
 
-Double-click `index.html` and use your browser's full-screen shortcut.
+- [ ] **Coverage:** import official kerb and traffic-order datasets where they exist, and normalise them into
+      the same engine input as OSM tags.
+- [ ] **Coverage:** use an imagery model to suggest missing kerb tags for review (a MapRoulette-style workflow).
+- [ ] **Coverage:** add national default rules, e.g. "no parking within 10 m of a junction" (UK Highway Code
+      243, DE StVO §12) and dropped kerbs. These aren't signposted, so OSM rarely maps them.
+- [ ] **Rules:** load public holidays per country (pass a location context to `opening_hours`). Right now `PH`
+      rules are evaluated as if no day is a public holiday.
+- [ ] **Rules:** evaluate in the destination's time zone. Today the browser's local time is used.
+- [ ] **Rules:** vehicle profile (EV, motorbike, blue badge, van height and weight).
+- [ ] **Availability:** crowdsourced "leaving now" signals and a backend.
+- [ ] **Availability:** occupancy prediction.
+- [ ] **App:** navigate to the nearest free kerb; save "where I parked" with an expiry reminder.
+- [ ] **App:** ship as an installable PWA or native app. Serve map tiles and Overpass from our own or paid
+      infrastructure; the public endpoints have usage policies that a production app would break.
 
-## Tuning (edit the `CONFIG` block at the top of `index.html`)
+## Data and licensing
 
-- `nParticles` — more = denser, more cells (also heavier on the CPU).
-- `worldHeight` — world size in Lenia units; smaller = larger cells on screen.
-- `substeps` — sim steps per frame; more = livelier motion (heavier).
-- `noise` — thermal jitter; keeps it churning, prevents any freeze.
-- `look.pointSize` — glow radius (fraction of screen height).
-- `look.gain` / `gamma` — maps mass density onto the heat ramp (brightness/contrast).
-- `mu_k, sigma_k, w_k, mu_g, sigma_g, c_rep, dt` — the Particle Lenia rule itself.
-
-## Credits / further reading
-
-- Particle Lenia — Mordvintsev et al., Google Research:
-  <https://google-research.github.io/self-organising-systems/particle-lenia/>
-- Lenia — Bert Chan: <https://chakazul.github.io/lenia.html>
-- Conway's Game of Life: <https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life>
+Map data © OpenStreetMap contributors, [ODbL](https://www.openstreetmap.org/copyright). Each kerb's popup
+links to the OSM object so users can fix wrong or missing rules at the source. The app is a guide only: the
+signs on the street always take precedence.

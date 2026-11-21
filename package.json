@@ -1,0 +1,24 @@
+{
+  "name": "free-parking-finder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Find free, legal on-street parking from OpenStreetMap parking regulations.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "leaflet": "1.9.4",
+    "opening_hours": "3.15.0"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.12",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.4"
+  }
+}
