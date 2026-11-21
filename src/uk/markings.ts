@@ -82,7 +82,14 @@ export interface MarkingEffect {
  *  - Mapped kerbs: mapped rules win, but a contradicting photo adds a warning
  *    and lowers the tier, because the markings may have changed since mapping.
  */
-export function applyMarking(m: KerbMarking, base: Assessment, inferred: boolean, unsurveyedNote: string): MarkingEffect {
+export function applyMarking(
+  m: KerbMarking,
+  base: Assessment,
+  inferred: boolean,
+  unsurveyedNote: string,
+  /** The kerb is in a controlled zone whose hours are known (they're the single-yellow hours). */
+  zoneHoursKnown = false,
+): MarkingEffect {
   const when = `aerial photo, ${formatImageDate(m.imageDate)}`;
   const restrictive = RESTRICTIVE[m.marking];
   const parked = m.parkedVehicles ? [`Cars were parked here in the ${when}`] : [];
@@ -98,6 +105,10 @@ export function applyMarking(m: KerbMarking, base: Assessment, inferred: boolean
     return { assessment: base };
   }
 
+  if (m.marking === 'single_yellow' && zoneHoursKnown) {
+    // The zone's control hours are the single yellow line's hours.
+    return { assessment: { ...base, reasons: [`Single yellow line (${when})`, ...base.reasons] }, checked: m.imageDate };
+  }
   if (restrictive) {
     return { assessment: { status: restrictive.status, confidence: 'medium', reasons: [`${restrictive.reason} (${when})`], needsDisc: false } };
   }

@@ -4,13 +4,14 @@ import { assessCarPark, type Assessment, type StayWindow, type Tags } from '../r
 import { buildKerbs, type Source } from '../uk/kerbs';
 import { buildZones } from '../uk/zones';
 import { carParkFit, type Fit, type Vehicle } from '../vehicle';
+import type { CouncilBay } from '../councils/types';
 
 /** Long kerbs are split into blocks of at most this length, each listed on its own. */
 export const KERB_BLOCK_M = 100;
 
 /**
  * How sure we are about the rules:
- *   confirmed  — fee and restrictions mapped explicitly
+ *   confirmed  — official council data, or fee and restrictions mapped explicitly
  *   partial    — parking mapped, but not every rule (e.g. no fee tag), or
  *                aerial imagery contradicts what's mapped
  *   checked    — no local rules mapped, but aerial imagery shows no yellow lines
@@ -39,7 +40,12 @@ export interface Place {
   imageDate?: string;
   fit: Fit;
   tags: Tags;
-  osmUrl: string;
+  /** Link to the OSM object, when the place comes from one. */
+  osmUrl?: string;
+  /** The council bay this place is, if any. */
+  bay?: CouncilBay;
+  /** Controlled parking zone, if known. */
+  zone?: string;
 }
 
 export interface SearchOptions {
@@ -59,6 +65,7 @@ export interface SearchOutcome {
 
 function tierOf(source: Source, a: Assessment, evidence: { checked?: string; conflict?: boolean } = {}): Tier {
   if (source === 'inferred') return evidence.checked ? 'checked' : 'unsurveyed';
+  if (source === 'council') return a.confidence === 'high' ? 'confirmed' : 'partial';
   return a.confidence === 'high' && !evidence.conflict ? 'confirmed' : 'partial';
 }
 
@@ -71,12 +78,12 @@ export function isResult(p: Place, opts: SearchOptions): boolean {
   );
 }
 
-export function evaluate(data: ParkingData, opts: SearchOptions): SearchOutcome {
+export function evaluate(data: ParkingData, opts: SearchOptions, now = new Date()): SearchOutcome {
   const { destination, stay, vehicle } = opts;
   const places: Place[] = [];
 
   const zones = buildZones(data);
-  for (const piece of buildKerbs(data, zones, stay, vehicle)) {
+  for (const piece of buildKerbs(data, zones, stay, vehicle, now)) {
     // Split parkable kerbs into blocks so each result points at a specific stretch.
     const blocks = piece.assessment.status === 'no_parking' ? [piece.geometry] : splitLine(piece.geometry, KERB_BLOCK_M);
     blocks.forEach((geometry, i) => {
@@ -96,7 +103,9 @@ export function evaluate(data: ParkingData, opts: SearchOptions): SearchOutcome 
         imageDate: piece.checked,
         fit: piece.fit,
         tags: piece.tags,
-        osmUrl: `https://www.openstreetmap.org/way/${piece.wayId}`,
+        osmUrl: piece.wayId ? `https://www.openstreetmap.org/way/${piece.wayId}` : undefined,
+        bay: piece.bay,
+        zone: piece.zone,
       });
     });
   }

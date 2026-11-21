@@ -37,10 +37,15 @@ See **[docs/UK_DATA_STRATEGY.md](docs/UK_DATA_STRATEGY.md)** for the full plan. 
    routes and bus lanes remove kerbs, and kerbs with no lines are marked as checked. Spec:
    [docs/KERB_MARKINGS_FORMAT.md](docs/KERB_MARKINGS_FORMAT.md). The app side is built; the detector needs
    licensed imagery.
-4. **Next:** council open data (CPZs, bays, yellow lines), TfL red routes, the DfT's digital TRO service, and
-   user reports.
+4. **Council open data**, fetched live where a council publishes it (**Camden** so far):
+   - every bay with its type, hours, max stay and space size
+   - controlled parking zone hours (other kerbs count as single yellow lines during them)
+   - live bay suspensions
 
-Each result is labelled **Rules mapped**, **Partly mapped**, **Lines checked** (no yellow lines in the aerial
+   Outside their hours, pay and permit bays become free (`src/councils/`).
+5. **Next:** more councils, TfL red routes, the DfT's digital TRO service, and user reports.
+
+Each result is labelled **Council data**, **Rules mapped**, **Partly mapped**, **Lines checked** (no yellow lines in the aerial
 photo, with its date) or **Unsurveyed** (national rules only: check for yellow lines and signs). Unsurveyed streets
 can be hidden.
 
@@ -74,6 +79,9 @@ rules first" sorts by tier, then distance.
 | `src/uk/streets.ts` | Which unmapped streets can be suggested at all |
 | `src/uk/kerbs.ts` | Builds kerb pieces: mapped or inferred rules, cut-outs, aerial markings, vehicle fit |
 | `src/uk/markings.ts` | What each aerial-photo marking means for a kerb |
+| `src/uk/council.ts` | Puts council bays on kerbs; bay and controlled-zone rules |
+| `src/councils/` | Council adapters (Camden), council times → opening_hours |
+| `test/fixtures/` | Real Camden data snapshots (OGL v3.0) used by the tests |
 | `src/data/markings.ts` | Loads and validates `kerb-markings/1` files (from `VITE_MARKINGS_URL`) |
 | `src/vehicle.ts` | Vehicle presets and size checks |
 | `src/search/rank.ts` | Blocks, distance, tiers, filtering and sorting |

@@ -1,0 +1,37 @@
+[{"restriction_type":"paid-for","n":"737"}
+,{"restriction_type":"disabled (dedicated)","n":"139"}
+,{"restriction_type":"taxi rank","n":"41"}
+,{"restriction_type":"paid-for / resident permit holders","n":"151"}
+,{"restriction_type":"dockless bike hire","n":"203"}
+,{"restriction_type":"paid-for / permit holders","n":"133"}
+,{"restriction_type":"police","n":"6"}
+,{"restriction_type":"loading","n":"200"}
+,{"restriction_type":"diplomatic","n":"16"}
+,{"restriction_type":"(off-street) protected permit holders only","n":"9"}
+,{"restriction_type":"doctor","n":"30"}
+,{"restriction_type":"loading / resident permit holders","n":"8"}
+,{"restriction_type":"paid-for (buses)","n":"7"}
+,{"restriction_type":"permit holders ev charging only","n":"178"}
+,{"restriction_type":"free (buses)","n":"21"}
+,{"restriction_type":"electric vehicle recharging","n":"282"}
+,{"restriction_type":"permit holders only","n":"2995"}
+,{"restriction_type":"loading / disabled (blue badge)","n":"10"}
+,{"restriction_type":"trader / paid-for","n":"1"}
+,{"restriction_type":"disabled (green permit)","n":"27"}
+,{"restriction_type":"trader / permit holders","n":"15"}
+,{"restriction_type":"solo motorcycles","n":"12"}
+,{"restriction_type":"trader","n":"11"}
+,{"restriction_type":"free (bicycles)","n":"24"}
+,{"restriction_type":"loading / paid-for","n":"4"}
+,{"restriction_type":"resident permit holders only","n":"2380"}
+,{"restriction_type":"trader / permit holders / paid-for","n":"1"}
+,{"restriction_type":"(off-street) permit holders only","n":"10"}
+,{"restriction_type":"free (buses)  / loading","n":"1"}
+,{"restriction_type":"cycle hire","n":"49"}
+,{"restriction_type":"car club","n":"165"}
+,{"restriction_type":"paid-for (solo motorcycles only)","n":"320"}
+,{"restriction_type":"free","n":"3"}
+,{"restriction_type":"disabled (blue badge)","n":"633"}
+,{"restriction_type":"loading / parking","n":"3"}
+,{"restriction_type":"ambulance","n":"19"}
+,{"restriction_type":"trader / resident permit holders","n":"14"}]

@@ -1,5 +1,6 @@
 import type { Tags } from '../rules/engine';
 import type { KerbMarking } from './markings';
+import type { CouncilData } from '../councils/types';
 
 export interface LatLon {
   lat: number;
@@ -35,6 +36,8 @@ export interface ParkingData {
   carParks: CarPark[];
   /** Road markings detected from aerial photography, if any (see data/markings.ts). */
   markings?: KerbMarking[];
+  /** Council bays and controlled parking zones, where a council publishes them (see councils/). */
+  council?: CouncilData;
 }
 
 const ROAD_TYPES =

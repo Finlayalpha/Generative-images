@@ -133,7 +133,7 @@ export function splitLine(line: LatLon[], maxLenM: number): LatLon[][] {
  * Walk along a line in ~1 m steps and split it into runs where `classify`
  * returns the same value. Returns each run's range and value.
  */
-export function runsAlong<T>(line: LatLon[], classify: (p: LatLon) => T, stepM = 1): { from: number; to: number; value: T }[] {
+export function runsAlong<T>(line: LatLon[], classify: (p: LatLon, along: number) => T, stepM = 1): { from: number; to: number; value: T }[] {
   const cum = cumulative(line);
   const total = cum[cum.length - 1]!;
   if (total === 0) return [];
@@ -142,12 +142,50 @@ export function runsAlong<T>(line: LatLon[], classify: (p: LatLon) => T, stepM =
   for (let k = 0; k < steps; k++) {
     const d0 = (total * k) / steps;
     const d1 = (total * (k + 1)) / steps;
-    const value = classify(interpolate(line, cum, (d0 + d1) / 2));
+    const value = classify(interpolate(line, cum, (d0 + d1) / 2), (d0 + d1) / 2);
     const last = runs[runs.length - 1];
     if (last && last.value === value) last.to = d1;
     else runs.push({ from: d0, to: d1, value });
   }
   return runs;
+}
+
+/** Project a point onto a line: distance from the line, and how far along it (m) the closest point is. */
+export function projectOnLine(line: LatLon[], target: LatLon): { along: number; distance: number } {
+  const pj = projector(target);
+  const pts = line.map(pj.to);
+  let best = { along: 0, d2: Infinity };
+  let walked = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i]!;
+    const b = pts[i + 1]!;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    const len = Math.sqrt(len2);
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, -(a.x * dx + a.y * dy) / len2));
+    const x = a.x + t * dx;
+    const y = a.y + t * dy;
+    const d2 = x * x + y * y;
+    if (d2 < best.d2) best = { along: walked + t * len, d2 };
+    walked += len;
+  }
+  return { along: best.along, distance: Math.sqrt(best.d2) };
+}
+
+/** Is a point inside a polygon (outer ring first, then holes)? */
+export function pointInPolygon(p: LatLon, rings: LatLon[][]): boolean {
+  const inRing = (ring: LatLon[]) => {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i]!;
+      const b = ring[j]!;
+      if (a.lat > p.lat !== b.lat > p.lat && p.lon < ((b.lon - a.lon) * (p.lat - a.lat)) / (b.lat - a.lat) + a.lon) inside = !inside;
+    }
+    return inside;
+  };
+  if (!rings.length || !inRing(rings[0]!)) return false;
+  return !rings.slice(1).some(inRing);
 }
 
 const SHORT_COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];

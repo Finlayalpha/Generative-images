@@ -1,0 +1,65 @@
+[{"times_of_operation":"mon - fri 08:30-18:30 & sat 08:30-11:00","n":"9"}
+,{"times_of_operation":"mon-sat 09:00-18:00","n":"204"}
+,{"times_of_operation":"mon-fri 09:00-19:00, sat 09:30-13:30","n":"1"}
+,{"times_of_operation":"mon-sat 09:00-20:00","n":"420"}
+,{"times_of_operation":"mon-thu 08:30-18:30, fri 08:30-18:30","n":"3"}
+,{"times_of_operation":"Mon-Wed, Fri & Sun at any time and Thur & Sat 18:00-07:00","n":"3"}
+,{"times_of_operation":"mon-sun 08:30-18:30","n":"15"}
+,{"times_of_operation":"mon-fri 08:30-20:00","n":"1"}
+,{"times_of_operation":"mon-fri 08:30-18:30, sat-sun 09:30-17:30","n":"87"}
+,{"times_of_operation":"mon-fri 08:00-18:30, sat 09:30-13:30","n":"1"}
+,{"times_of_operation":"mon-fri 08:30-18:30, sat 09:30-17:30","n":"58"}
+,{"times_of_operation":"mon-fri 08:30-18:00","n":"221"}
+,{"times_of_operation":"mon-fri 08:00-20:00","n":"3"}
+,{"times_of_operation":"mon-fri 08:30-18:30, sat 08:30-13:30","n":"995"}
+,{"times_of_operation":"mon-fri 08:30-18:30, sat 08:30-12:00","n":"16"}
+,{"times_of_operation":"mon-sun 06:00-20:00","n":"1"}
+,{"times_of_operation":"mon, tue, wed, fri 08:30-18:30","n":"5"}
+,{"times_of_operation":"mon-fri 10:00-12:00","n":"622"}
+,{"times_of_operation":"mon-sun 07:00-19:00","n":"3"}
+,{"times_of_operation":"mon-fri 08:00-18:30","n":"2"}
+,{"times_of_operation":"mon-sun 10:00-14:00 & 22:00-06:00","n":"2"}
+,{"times_of_operation":"mon-sun 06:00-07:00 & 13:00-15:00","n":"1"}
+,{"times_of_operation":"mon-sun 06:00- 00:00","n":"1"}
+,{"times_of_operation":"mon-fri 09:00-18:30, sat 09:30-13:30","n":"937"}
+,{"times_of_operation":"at any time","n":"1979"}
+,{"times_of_operation":"mon-sun 22:00-03:00","n":"1"}
+,{"times_of_operation":"mon-fri 07:00-19:00","n":"2"}
+,{"times_of_operation":"mon-sun 08:30-10:00, 12:00-14:00, 16:00-23:00 & 10:00-12:00, 14:00-16:00","n":"3"}
+,{"times_of_operation":"mon-fri 08:00-09:00 & 15:00-17:00","n":"15"}
+,{"times_of_operation":"mon-fri 09:00-18:30","n":"3"}
+,{"times_of_operation":"mon-fri 08:30-22:00","n":"11"}
+,{"times_of_operation":"mon-sat 08:30-18:30","n":"419"}
+,{"times_of_operation":"mon-fri 09:00-15:00, sat 09:00-18:00","n":"1"}
+,{"times_of_operation":"mon-sun 10:00-16:00","n":"1"}
+,{"times_of_operation":"mon-fri 08:30-19:00","n":"1"}
+,{"times_of_operation":"mon-fri 08:30-18:30, sat 09:30-13:30","n":"2"}
+,{"times_of_operation":"mon-fri 10:00-16:00","n":"4"}
+,{"times_of_operation":"mon-fri 08:00-13:00, sat 09:00-13:00","n":"1"}
+,{"times_of_operation":"mon-sat 08:30-22:00","n":"100"}
+,{"times_of_operation":"mon-fri 07:00-10:00 & 16:00-19:00","n":"1"}
+,{"times_of_operation":"mon-sun 08:00 - 12:00","n":"1"}
+,{"times_of_operation":"mon-sun 20:30-06:30","n":"1"}
+,{"times_of_operation":"mon-fri 10:00 - 16:00 & 19:00 - 23:00, sat & sun 09:30-23:00","n":"1"}
+,{"times_of_operation":"mon-fri 08:30-23:00 & sat-sun at any time","n":"114"}
+,{"times_of_operation":"mon-sat 09:00-22:00","n":"7"}
+,{"times_of_operation":"mon-sun 08:00-20:00","n":"6"}
+,{"times_of_operation":"sat and sun 09:30 - 17:30","n":"1"}
+,{"times_of_operation":"mon-fri 08:30-18:30, sat 08:00-17:30","n":"1"}
+,{"times_of_operation":"mon-sun 19:00- 11:00","n":"2"}
+,{"times_of_operation":"mon-fri 12:30-14:30","n":"277"}
+,{"times_of_operation":"mon-fri 08:00-18:00","n":"1"}
+,{"times_of_operation":"mon-sat 10:00-12:00","n":"2"}
+,{"times_of_operation":"mon-sun 10:00-12:00 & 14:00-16:00","n":"2"}
+,{"times_of_operation":"mon-fri 08:00-09:30 & 17:00-18:30","n":"1"}
+,{"times_of_operation":"wed-fri  08:30-16:00","n":"1"}
+,{"times_of_operation":"mon-sun 10:00-13:00 & 20:00-00:00","n":"2"}
+,{"times_of_operation":"mon-sun 08:30-20:00","n":"2"}
+,{"times_of_operation":"mon-sun 19:00-07:00","n":"1"}
+,{"times_of_operation":"mon-fri 08:00-13:00","n":"2"}
+,{"times_of_operation":"mon-sat 09:00-19:00","n":"104"}
+,{"times_of_operation":"mon-fri 08:30-18:30","n":"1996"}
+,{"times_of_operation":"mon, tues, wed & fri 09:00 -11:00 & thurs, sat 08:30 -11:00","n":"1"}
+,{"times_of_operation":"mon-sun 10:00-14:00","n":"4"}
+,{"times_of_operation":"mon-fri 08:30-23:00, sat-sun 09:30-23:00","n":"169"}
+,{"times_of_operation":"mon & tues 08:30-18:30, wed-fri 15:00-18:30","n":"4"}]

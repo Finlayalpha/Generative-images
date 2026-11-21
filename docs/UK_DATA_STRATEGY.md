@@ -55,9 +55,56 @@ How to grow it:
   account, or to our own store for moderation first.
 - Each result already links to its OSM way so users can fix it.
 
-## Layer 2: council open data (next step, biggest win per hour of work)
+## Layer 2: council open data (Camden built; more councils next)
 
-Some councils publish their parking layers as open data. Examples found so far:
+### Camden (pilot, built)
+
+The app fetches Camden's open data live from the browser for every search inside the borough (`src/councils/`).
+The API allows cross-origin requests, supports radius queries, and is under the Open Government Licence v3.0. The
+licence attribution is shown in the app.
+
+| Dataset | Id | Used for |
+|---|---|---|
+| Parking Bays | `7hiv-3r9k` | ~8,900 bays with type, times, max stay, length, number of spaces and CPZ. Updated daily |
+| Controlled Parking Zones | `vf6e-iymu` | 53 zone polygons with Mon–Fri and Saturday control hours |
+| Parking Suspensions | `av3b-8trg` | Live status per space: suspended today, or a suspension planned |
+
+How it's used:
+- **Times.** Bay "times of operation" text is translated into opening_hours syntax. Every one of the 65 distinct
+  strings in the live dataset translates (the tests check this against a snapshot).
+- **Bay types.**
+  - Pay bays and shared pay/permit bays become paid during their hours.
+  - Permit, residents', car club, doctor and diplomatic bays are permit-only during their hours.
+  - Disabled, loading and EV bays are never offered.
+  - Motorcycle, bicycle, bus and bike-hire bays are never for cars.
+  - **Outside its hours every bay is an ordinary free kerb.**
+- **Bays onto kerbs.** Each bay is matched to the nearest kerb line (so the correct side of the street) and covers
+  the stretch its outline projects onto. Bays are authorised spaces, so they override the junction cut-out. Bays
+  with no street nearby (mews, estates) are shown as they are.
+- **Zones.** On unsurveyed kerbs inside a CPZ, everything outside bays counts as a single yellow line during the
+  zone's hours. Zone membership is checked along the kerb, because streets cross zone boundaries.
+- **Space size.** Bay length ÷ number of spaces gives a space length, which feeds the vehicle-size filter.
+
+Real-data check (snapshot of 47 bays within 120 m of Fitzroy Street, 2-hour stay): **0 free on Monday at 11:00,
+23 free from 19:00 and on Sunday morning, 1 on Saturday afternoon** (that zone is controlled until 18:30 on
+Saturdays).
+
+What Camden doesn't publish: **yellow lines**. Outside bays and outside zone hours, a kerb could still be double
+yellow. Those kerbs stay *Unsurveyed*, with a "check for double yellow lines" note, until aerial markings (layer 5)
+or a yellow-line dataset fill the gap. Camden's penalty charge notice datasets record contravention locations,
+which could flag places where people often get tickets. That is worth exploring as a cross-check.
+
+### Adding another council
+
+1. Write an adapter in `src/councils/` that returns `CouncilData`: bays as engine tags (reuse `toOpeningHours`
+   for their times text, extending it if their phrasing differs), and zones with opening_hours hours.
+2. Register it in `src/councils/index.ts` with a bounding box.
+3. Save a small real sample as test fixtures and assert that every times string and bay type in their full
+   dataset is handled.
+4. Councils whose data is only a file download (not a live API) need the pre-merged tile backend (step 4 of the
+   pipeline below) instead of live fetching.
+
+### Other councils found so far
 
 | Council | What's published |
 |---|---|
@@ -156,9 +203,9 @@ contributors.
 
 ## Suggested order of work
 
-1. CPZ polygons and hours from council open data (biggest correctness gain for unsurveyed streets).
-2. Bays and yellow lines from councils that publish them (Camden and Edinburgh first, as they have the richest data).
-   These are also the training and test labels for the aerial-imagery detector.
+1. ~~CPZ polygons, bays and live suspensions for Camden.~~ Built.
+2. Next councils: Edinburgh (bays and zones on Spatial Hub Scotland), then the others above. Their bays are also
+   the training and test labels for the aerial-imagery detector.
 3. Aerial-imagery pilot in the same council area: licence imagery, train the detector, measure it against the
    council data, then publish `kerb-markings/1` files.
 4. TfL red routes; pavement-parking rules for London and Scotland.

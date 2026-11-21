@@ -3,6 +3,8 @@ import type { KerbMarking, MarkingType } from './markings';
 import type { Tags } from '../rules/engine';
 import { offsetLine } from '../geo/offset';
 import { lineLength, sliceLine } from '../geo/measure';
+import { bayFromRow } from '../councils/camden';
+import type { CouncilBay, CouncilData } from '../councils/types';
 
 /**
  * Synthetic demo town (not a real place) so the app can be tried without
@@ -167,5 +169,59 @@ function markings(ways: StreetWay[]): KerbMarking[] {
   ];
 }
 
+/**
+ * Synthetic council data, in the same shape a real council adapter produces:
+ * a controlled zone over the east of town, and bays on Church Lane.
+ */
+function council(): CouncilData {
+  const north = (p: LatLon, m: number): LatLon => ({ lat: p.lat + m / 111_320, lon: p.lon });
+  const bay = (id: string, type: string, times: string, t0: number, t1: number, maxStay = 'N/A'): CouncilBay => {
+    // Drawn against the north kerb of Church Lane, between Elm Grove's and Bridge Street's junctions.
+    const a = mid(node(1, 3), node(1, 4), t0);
+    const b = mid(node(1, 3), node(1, 4), t1);
+    const pts = [north(a, 5), north(a, 7), north(b, 7), north(b, 5)];
+    const spaces = Math.max(1, Math.round((t1 - t0) * 175 / 5.5));
+    const row = bayFromRow({
+      unique_identifier: id,
+      restriction_type: type,
+      times_of_operation: times,
+      maximum_stay: maxStay,
+      road_name: 'Church Lane',
+      controlled_parking_zone: 'Z-E',
+      parking_spaces: String(spaces),
+      parking_bay_length_metres: String(Math.round((t1 - t0) * 175)),
+      epsg_4326_geojson_geometry: JSON.stringify({ type: 'LineString', coordinates: pts.map((p) => [p.lon, p.lat]) }),
+    })!;
+    return { ...row, council: 'demo' };
+  };
+  const west = node(0, 2).lon + 0.0006;
+  const east = node(0, 4).lon + 0.003;
+  const top = node(0, 0).lat + 0.002;
+  const bottom = node(3, 0).lat - 0.002;
+  return {
+    councils: [{ id: 'demo', name: 'Demo council', attribution: 'Synthetic demo council data' }],
+    zones: [
+      {
+        code: 'Z-E',
+        name: 'Demo East zone',
+        council: 'demo',
+        hours: 'Mo-Fr 08:30-18:30, Sa 08:30-13:30',
+        polygon: [[{ lat: top, lon: west }, { lat: top, lon: east }, { lat: bottom, lon: east }, { lat: bottom, lon: west }]],
+      },
+    ],
+    bays: [
+      bay('D1', 'resident permit holders only', 'mon-fri 08:30-18:30', 0.15, 0.4),
+      bay('D2', 'paid-for', 'mon-sat 08:30-18:30', 0.45, 0.6, '4 hours'),
+      bay('D3', 'disabled (blue badge)', 'at any time', 0.62, 0.68),
+    ],
+  };
+}
+
 const STREETS = streets();
-export const DEMO_DATA: ParkingData = { streets: STREETS, points: POINTS, carParks: CAR_PARKS, markings: markings(STREETS) };
+export const DEMO_DATA: ParkingData = {
+  streets: STREETS,
+  points: POINTS,
+  carParks: CAR_PARKS,
+  markings: markings(STREETS),
+  council: council(),
+};

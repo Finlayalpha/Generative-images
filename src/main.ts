@@ -4,6 +4,7 @@ import './style.css';
 
 import { buildAroundQuery, fetchParking, type LatLon, type ParkingData } from './data/overpass';
 import { fetchMarkings, formatImageDate } from './data/markings';
+import { fetchCouncilData } from './councils';
 import { DEMO_CENTER, DEMO_DATA } from './data/demo';
 import { directionTo } from './geo/measure';
 import { geocode } from './search/geocode';
@@ -33,6 +34,7 @@ const TIER_DASH: Record<Tier, string | undefined> = { confirmed: undefined, part
 
 /** Tier label, with the photo date for imagery-checked places. */
 function tierLabel(p: Place): string {
+  if (p.source === 'council') return p.tier === 'confirmed' ? 'Council data' : 'Council data (partly read)';
   return p.tier === 'checked' && p.imageDate ? `${TIER_LABEL.checked} · ${formatImageDate(p.imageDate)}` : TIER_LABEL[p.tier];
 }
 
@@ -205,7 +207,7 @@ function popupHtml(p: Place): string {
   const badge = tooBig ? { color: TOO_BIG_COLOR, label: 'Your vehicle won’t fit' } : STATUS_STYLE[a.status];
   const lines: string[] = [];
   if (destination) lines.push(`${metres(p.distance)} from destination (~${walkMin(p.distance)} min walk)`);
-  if (a.status !== 'no_parking' && a.freeForMinutes !== undefined && p.source === 'mapped') {
+  if (a.status !== 'no_parking' && a.freeForMinutes !== undefined) {
     lines.push(
       a.freeForMinutes >= 24 * 60
         ? 'Free & legal for 24h+ from arrival'
@@ -228,12 +230,21 @@ function popupHtml(p: Place): string {
       <span class="chip tier tier-${p.tier}">${escapeHtml(tierLabel(p))}</span></div>
     <ul>${lines.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>
     ${raw ? `<details><summary>OSM tags</summary><table>${raw}</table></details>` : ''}
-    <a href="${p.osmUrl}" target="_blank" rel="noopener">View / fix on OpenStreetMap</a>
+    ${p.bay ? `<div class="muted">Source: council open data, bay ${escapeHtml(p.bay.id)}${p.zone ? `, zone ${escapeHtml(p.zone)}` : ''}</div>` : ''}
+    ${p.osmUrl ? `<a href="${p.osmUrl}" target="_blank" rel="noopener">View / fix on OpenStreetMap</a>` : ''}
   </div>`;
 }
 
 // ---------- rendering ----------
+function showAttribution() {
+  const el = $('attribution');
+  const lines = data?.council?.councils.map((c) => c.attribution) ?? [];
+  el.textContent = lines.join('. ');
+  el.hidden = lines.length === 0;
+}
+
 function render() {
+  showAttribution();
   placesLayer.clearLayers();
   rankLayer.clearLayers();
   layersById.clear();
@@ -382,12 +393,13 @@ async function loadAround(dest: Destination) {
   placesLayer.clearLayers();
   rankLayer.clearLayers();
   try {
-    // Aerial-imagery markings are optional: if that service fails, carry on without them.
-    const [parking, markings] = await Promise.all([
+    // Aerial-imagery markings and council data are optional: if those services fail, carry on without them.
+    const [parking, markings, council] = await Promise.all([
       fetchParking(buildAroundQuery(c, r), ctrl.signal),
       fetchMarkings(c, r, ctrl.signal).catch(() => []),
+      fetchCouncilData(c, r, ctrl.signal),
     ]);
-    data = { ...parking, markings };
+    data = { ...parking, markings, council };
     fetchedRadius = r;
     render();
     revealResults();
