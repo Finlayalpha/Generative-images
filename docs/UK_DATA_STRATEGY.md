@@ -13,7 +13,8 @@ shows which layer its rules came from.
 | Tier shown in the app | Meaning |
 |---|---|
 | **Rules mapped** | Fee and restrictions are recorded explicitly for that kerb |
-| **Partly mapped** | Parking is recorded, but not every rule (e.g. no fee recorded) |
+| **Partly mapped** | Parking is recorded, but not every rule (e.g. no fee recorded), or an aerial photo contradicts it |
+| **Lines checked** | No local rules known, but an aerial photo shows no yellow lines (with the photo date) |
 | **Unsurveyed** | No local rules known. Only national rules are applied, and the user is told to check for lines and signs |
 
 ## Layer 0: national rules from the road layout (built, applies everywhere)
@@ -39,7 +40,7 @@ These are derived from OpenStreetMap road geometry, which covers essentially the
 
 **What layer 0 can't see:** yellow lines, CPZs, pay and permit bays, loading bans, red routes and clearways. An
 unsurveyed kerb that passes every national rule can still have double yellow lines. That is why unsurveyed
-results are labelled and can be hidden. Removing that risk is the goal of layers 1 to 4.
+results are labelled and can be hidden. Removing that risk is the goal of layers 1 to 5.
 
 ## Layer 1: OpenStreetMap street-parking tags (built)
 
@@ -124,6 +125,29 @@ Because historic orders won't be digitised, layers 1 and 2 stay necessary for th
   Reports downgrade or upgrade a kerb's tier straight away. After review they are written back to OSM, so the
   improvement is shared.
 
+## Layer 5: road markings from aerial photography (app side built; detector needs imagery)
+
+A one-off survey photo can't show availability, but road markings stay put for years. So aerial imagery is a good
+source for **where** restrictions are painted: double and single yellow lines, bays, zig-zags, red routes, bus
+lanes and "keep clear" boxes. It can't show **when** they apply: hours are on signs.
+
+- **Imagery:** aerial (planes) rather than satellite. UK yellow lines are 50–100 mm wide. That is visible at the
+  12.5 cm per pixel or better that UK aerial surveys provide in towns, and not reliably at the best satellites'
+  ~30 cm.
+- **Licence:** most imagery licences forbid deriving a database from the photos, or charge separately for it.
+  Permission to trace into OSM by hand (Bing, Esri) is not permission for automated extraction into our product.
+  We need a commercial licence that explicitly covers derived data.
+- **How the app uses it** (built: `src/uk/markings.ts`, format in [KERB_MARKINGS_FORMAT.md](KERB_MARKINGS_FORMAT.md)):
+  - Restrictive markings remove unsurveyed kerbs. Errors in this direction only cost a suggestion, never a ticket.
+  - Kerbs with no lines become **Lines checked**, with the photo date, and with a note if cars were parked there.
+  - Painted bays are not suggested until their rules are known.
+  - On mapped kerbs, mapped rules win, but a contradicting photo adds a warning and lowers the tier.
+- **Detector:** classify short image strips along each kerb. Train it using council bay and yellow-line data as
+  labels (layer 2), so a council with good data doubles as the training and test area. Re-run whenever new
+  imagery arrives.
+- **Pairs with street-level photos for signs:** Mapillary is openly licensed and detects many traffic signs.
+  Google Street View's terms forbid extracting data.
+
 ## How to measure progress
 
 Track, per council area: **the share of kerb length near where users actually search that has mapped (non-inferred)
@@ -134,7 +158,10 @@ contributors.
 
 1. CPZ polygons and hours from council open data (biggest correctness gain for unsurveyed streets).
 2. Bays and yellow lines from councils that publish them (Camden and Edinburgh first, as they have the richest data).
-3. TfL red routes; pavement-parking rules for London and Scotland.
-4. D-TRO adapter, ready before the legal requirement starts.
-5. In-app reporting with OSM write-back.
-6. A move from live Overpass queries to our own pre-merged tiles (needed anyway for production load).
+   These are also the training and test labels for the aerial-imagery detector.
+3. Aerial-imagery pilot in the same council area: licence imagery, train the detector, measure it against the
+   council data, then publish `kerb-markings/1` files.
+4. TfL red routes; pavement-parking rules for London and Scotland.
+5. D-TRO adapter, ready before the legal requirement starts.
+6. In-app reporting with OSM write-back.
+7. A move from live Overpass queries to our own pre-merged tiles (needed anyway for production load).

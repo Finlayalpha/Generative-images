@@ -11,11 +11,13 @@ export const KERB_BLOCK_M = 100;
 /**
  * How sure we are about the rules:
  *   confirmed  — fee and restrictions mapped explicitly
- *   partial    — parking mapped, but not every rule (e.g. no fee tag)
+ *   partial    — parking mapped, but not every rule (e.g. no fee tag), or
+ *                aerial imagery contradicts what's mapped
+ *   checked    — no local rules mapped, but aerial imagery shows no yellow lines
  *   unsurveyed — no local rules mapped; only national rules applied
  */
-export type Tier = 'confirmed' | 'partial' | 'unsurveyed';
-export const TIER_ORDER: Tier[] = ['confirmed', 'partial', 'unsurveyed'];
+export type Tier = 'confirmed' | 'partial' | 'checked' | 'unsurveyed';
+export const TIER_ORDER: Tier[] = ['confirmed', 'partial', 'checked', 'unsurveyed'];
 
 export type SortMode = 'nearest' | 'certain';
 
@@ -33,6 +35,8 @@ export interface Place {
   assessment: Assessment;
   source: Source;
   tier: Tier;
+  /** Date of the aerial photo behind a "checked" tier. */
+  imageDate?: string;
   fit: Fit;
   tags: Tags;
   osmUrl: string;
@@ -53,9 +57,9 @@ export interface SearchOutcome {
   results: Place[];
 }
 
-function tierOf(source: Source, a: Assessment): Tier {
-  if (source === 'inferred') return 'unsurveyed';
-  return a.confidence === 'high' ? 'confirmed' : 'partial';
+function tierOf(source: Source, a: Assessment, evidence: { checked?: string; conflict?: boolean } = {}): Tier {
+  if (source === 'inferred') return evidence.checked ? 'checked' : 'unsurveyed';
+  return a.confidence === 'high' && !evidence.conflict ? 'confirmed' : 'partial';
 }
 
 export function isResult(p: Place, opts: SearchOptions): boolean {
@@ -88,7 +92,8 @@ export function evaluate(data: ParkingData, opts: SearchOptions): SearchOutcome 
         distance: near.distance,
         assessment: piece.assessment,
         source: piece.source,
-        tier: tierOf(piece.source, piece.assessment),
+        tier: tierOf(piece.source, piece.assessment, piece),
+        imageDate: piece.checked,
         fit: piece.fit,
         tags: piece.tags,
         osmUrl: `https://www.openstreetmap.org/way/${piece.wayId}`,

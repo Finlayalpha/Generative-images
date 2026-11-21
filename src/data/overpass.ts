@@ -1,4 +1,5 @@
 import type { Tags } from '../rules/engine';
+import type { KerbMarking } from './markings';
 
 export interface LatLon {
   lat: number;
@@ -32,6 +33,8 @@ export interface ParkingData {
   streets: StreetWay[];
   points: PointFeature[];
   carParks: CarPark[];
+  /** Road markings detected from aerial photography, if any (see data/markings.ts). */
+  markings?: KerbMarking[];
 }
 
 const ROAD_TYPES =

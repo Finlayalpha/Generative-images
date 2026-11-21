@@ -6,6 +6,7 @@ import { normalizeLegacy } from '../rules/legacy';
 import { combineFits, kerbFit, MANOEUVRE_M, obstructionFit, roadFit, BAY, type Fit, type Vehicle } from '../vehicle';
 import { inferSide } from './streets';
 import type { Zone } from './zones';
+import { applyMarking, candidateMarkings, markingAt } from './markings';
 
 export const KERB_OFFSET_M = 4;
 
@@ -24,6 +25,10 @@ export interface KerbPiece {
   assessment: Assessment;
   source: Source;
   fit: Fit;
+  /** Aerial photo date, when imagery shows an unsurveyed kerb has no lines. */
+  checked?: string;
+  /** Aerial imagery contradicts the mapped rules. */
+  conflict?: boolean;
 }
 
 export const UNSURVEYED_NOTE = 'Parking rules not mapped here: check for yellow lines and signs';
@@ -58,7 +63,8 @@ function bboxFilter(line: LatLon[], z: Zone): boolean {
  *  1. Use mapped OSM parking rules where they exist ("mapped").
  *  2. Otherwise apply UK national rules to the street ("inferred").
  *  3. Cut out zones around junctions, crossings, bus stops, driveways, …
- *  4. Check the vehicle fits: street size limits, bay size, length of each gap.
+ *  4. Apply road markings seen in aerial photography, where available.
+ *  5. Check the vehicle fits: street size limits, bay size, length of each gap.
  */
 export function buildKerbs(data: ParkingData, zones: Zone[], stay: StayWindow, vehicle: Vehicle): KerbPiece[] {
   const pieces: KerbPiece[] = [];
@@ -110,24 +116,74 @@ export function buildKerbs(data: ParkingData, zones: Zone[], stay: StayWindow, v
       const cutting = zones.filter(
         (z) => (source === 'inferred' || z.appliesToMapped) && bboxFilter(kerb, z) && nearestOnLine(kerb, z.center).distance <= z.near,
       );
-      const runs = cutting.length
-        ? runsAlong(kerb, (p) => cutting.findIndex((z) => distanceM(p, z.center) <= z.radius))
-        : [{ from: 0, to: Infinity, value: -1 }];
+      const observed = candidateMarkings(kerb, data.markings ?? []);
+      // Classify each metre of kerb: a national-rule zone ("z<i>"), an aerial
+      // observation ("m<i>"), or nothing known ("").
+      const runs =
+        cutting.length || observed.length
+          ? runsAlong(kerb, (p) => {
+              const z = cutting.findIndex((zone) => distanceM(p, zone.center) <= zone.radius);
+              if (z >= 0) return `z${z}`;
+              const m = observed.length ? markingAt(p, observed) : -1;
+              return m >= 0 ? `m${m}` : '';
+            })
+          : [{ from: 0, to: Infinity, value: '' }];
 
-      runs.forEach((run, k) => {
-        const geometry = run.to === Infinity ? kerb : sliceLine(kerb, run.from, run.to);
-        const id = `w${way.id}:${side}${runs.length > 1 ? `:${k}` : ''}`;
-        if (run.value >= 0) {
-          const reason = cutting[run.value]!.reason;
-          pieces.push({ ...base, id, geometry, fit: sideFit, assessment: { status: 'no_parking', confidence: 'medium', reasons: [reason], needsDisc: false } });
-          return;
+      type Part = { from: number; to: number; assessment: Assessment; checked?: string; conflict?: boolean };
+      const classified: Part[] = runs.map((run) => {
+        const span = { from: run.from, to: run.to };
+        if (run.value.startsWith('z')) {
+          const reason = cutting[Number(run.value.slice(1))]!.reason;
+          return { ...span, assessment: { status: 'no_parking', confidence: 'medium', reasons: [reason], needsDisc: false } as Assessment };
         }
+        if (run.value.startsWith('m')) {
+          return { ...span, ...applyMarking(observed[Number(run.value.slice(1))]!, assessment, source === 'inferred', UNSURVEYED_NOTE) };
+        }
+        return { ...span, assessment };
+      });
+
+      // Merge neighbouring stretches with the same outcome (e.g. an observation that
+      // changed nothing), so kerbs aren't fragmented.
+      const merged: Part[] = [];
+      for (const part of classified) {
+        const prev = merged[merged.length - 1];
+        const same =
+          prev &&
+          (prev.assessment === part.assessment ||
+            (prev.assessment.status === 'no_parking' && part.assessment.status === 'no_parking' && prev.assessment.reasons[0] === part.assessment.reasons[0])) &&
+          prev.checked === part.checked &&
+          prev.conflict === part.conflict;
+        if (same) prev.to = part.to;
+        else merged.push({ ...part });
+      }
+      const parts = merged.map((part) => ({
+        ...part,
+        geometry: part.from === 0 && part.to === Infinity ? kerb : sliceLine(kerb, part.from, part.to),
+        length: part.to - part.from,
+      }));
+
+      // A parked car needs one continuous free stretch, which may span several parts.
+      const groupLength: number[] = [];
+      for (let i = 0; i < parts.length; ) {
+        let j = i;
+        let total = 0;
+        while (j < parts.length && parts[j]!.assessment.status === 'free') total += parts[j++]!.length;
+        if (j === i) {
+          groupLength[i++] = 0;
+          continue;
+        }
+        for (let k = i; k < j; k++) groupLength[k] = total;
+        i = j;
+      }
+
+      parts.forEach((part, k) => {
+        const id = `w${way.id}:${side}${parts.length > 1 ? `:${k}` : ''}`;
         let fit = sideFit;
-        const len = run.to === Infinity ? Infinity : run.to - run.from;
-        if (len < minGap) {
-          fit = combineFits(fit, { verdict: 'too_big', notes: [`Gap is only ${Math.round(len * 10) / 10} m: too short for your vehicle`] });
+        const gap = groupLength[k]!;
+        if (part.assessment.status === 'free' && gap < minGap) {
+          fit = combineFits(fit, { verdict: 'too_big', notes: [`Gap is only ${Math.round(gap * 10) / 10} m: too short for your vehicle`] });
         }
-        pieces.push({ ...base, id, geometry, assessment, fit });
+        pieces.push({ ...base, id, geometry: part.geometry, assessment: part.assessment, fit, checked: part.checked, conflict: part.conflict });
       });
     }
   }

@@ -1,5 +1,8 @@
 import type { CarPark, LatLon, ParkingData, PointFeature, StreetWay } from './overpass';
+import type { KerbMarking, MarkingType } from './markings';
 import type { Tags } from '../rules/engine';
+import { offsetLine } from '../geo/offset';
+import { lineLength, sliceLine } from '../geo/measure';
 
 /**
  * Synthetic demo town (not a real place) so the app can be tried without
@@ -121,4 +124,48 @@ const CAR_PARKS: CarPark[] = [
   },
 ];
 
-export const DEMO_DATA: ParkingData = { streets: streets(), points: POINTS, carParks: CAR_PARKS };
+/**
+ * Synthetic aerial-imagery observations: as if a survey photo from June 2025
+ * had been run through the marking detector.
+ */
+function markings(ways: StreetWay[]): KerbMarking[] {
+  const byId = new Map(ways.map((w) => [w.id, w]));
+  const obs = (
+    wayId: number,
+    side: 'left' | 'right',
+    marking: MarkingType,
+    from: number,
+    to: number,
+    extra: Partial<KerbMarking> = {},
+  ): KerbMarking => {
+    // Real kerbs aren't exactly where we assume: put the observation 1 m further out.
+    const kerb = offsetLine(byId.get(wayId)!.geometry, side === 'right' ? 5 : -5);
+    const len = lineLength(kerb);
+    return {
+      marking,
+      geometry: sliceLine(kerb, Math.max(0, from), Math.min(len, to)),
+      confidence: 0.9,
+      imageDate: '2025-06-14',
+      source: 'demo-survey-2025',
+      ...extra,
+    };
+  };
+  return [
+    // Church Lane (id 101, west→east; left = north side): double yellows on the western end.
+    obs(101, 'left', 'double_yellow', 0, 260),
+    // …and no lines on the south side, with cars parked.
+    obs(101, 'right', 'clear', 0, 1000, { parkedVehicles: true }),
+    // Station Road (id 100): single yellow along the south side.
+    obs(100, 'right', 'single_yellow', 0, 1000, { confidence: 0.85 }),
+    // Elm Grove (id 203, north→south): no lines either side.
+    obs(203, 'left', 'clear', 0, 1000, { parkedVehicles: true }),
+    obs(203, 'right', 'clear', 0, 1000),
+    // Victoria Road (id 200, north→south; right = west side): marked bays, rules unknown.
+    obs(200, 'right', 'bay', 150, 450, { confidence: 0.8 }),
+    // Park Avenue (id 103, mapped as free): the photo shows double yellows on part of it.
+    obs(103, 'left', 'double_yellow', 420, 500),
+  ];
+}
+
+const STREETS = streets();
+export const DEMO_DATA: ParkingData = { streets: STREETS, points: POINTS, carParks: CAR_PARKS, markings: markings(STREETS) };

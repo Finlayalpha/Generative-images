@@ -3,6 +3,7 @@ import 'leaflet/dist/leaflet.css';
 import './style.css';
 
 import { buildAroundQuery, fetchParking, type LatLon, type ParkingData } from './data/overpass';
+import { fetchMarkings, formatImageDate } from './data/markings';
 import { DEMO_CENTER, DEMO_DATA } from './data/demo';
 import { directionTo } from './geo/measure';
 import { geocode } from './search/geocode';
@@ -25,9 +26,15 @@ const TOO_BIG_COLOR = '#9ca3af';
 const TIER_LABEL: Record<Tier, string> = {
   confirmed: 'Rules mapped',
   partial: 'Partly mapped',
+  checked: 'Lines checked',
   unsurveyed: 'Unsurveyed',
 };
-const TIER_DASH: Record<Tier, string | undefined> = { confirmed: undefined, partial: '10 6', unsurveyed: '1 9' };
+const TIER_DASH: Record<Tier, string | undefined> = { confirmed: undefined, partial: '10 6', checked: '5 5', unsurveyed: '1 9' };
+
+/** Tier label, with the photo date for imagery-checked places. */
+function tierLabel(p: Place): string {
+  return p.tier === 'checked' && p.imageDate ? `${TIER_LABEL.checked} · ${formatImageDate(p.imageDate)}` : TIER_LABEL[p.tier];
+}
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const form = $<HTMLFormElement>('search-form');
@@ -155,6 +162,7 @@ const legendItems: [string, string][] = [
   ),
   [`<span class="swatch" style="background:${TOO_BIG_COLOR}"></span>`, 'Free, but your vehicle won’t fit'],
   ['<span class="swatch dashed"></span>', 'Partly mapped (e.g. fee not recorded)'],
+  ['<span class="swatch short-dashed"></span>', 'Lines checked: no yellow lines in the aerial photo'],
   ['<span class="swatch dotted"></span>', 'Unsurveyed: national rules only'],
 ];
 for (const [sw, label] of legendItems) {
@@ -217,7 +225,7 @@ function popupHtml(p: Place): string {
   return `<div class="popup">
     <strong>${escapeHtml(p.name)}</strong>${p.detail ? ` <span class="muted">· ${escapeHtml(p.detail)}</span>` : ''}
     <div class="badges"><span class="badge" style="background:${badge.color}">${badge.label}</span>
-      <span class="chip tier tier-${p.tier}">${TIER_LABEL[p.tier]}</span></div>
+      <span class="chip tier tier-${p.tier}">${escapeHtml(tierLabel(p))}</span></div>
     <ul>${lines.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>
     ${raw ? `<details><summary>OSM tags</summary><table>${raw}</table></details>` : ''}
     <a href="${p.osmUrl}" target="_blank" rel="noopener">View / fix on OpenStreetMap</a>
@@ -306,7 +314,7 @@ function resultItem(r: Place, rank: number): HTMLLIElement {
   btn.className = `result tier-${r.tier}`;
   const chips: string[] = [];
   if (r.kind === 'car_park') chips.push('<span class="chip">Car park</span>');
-  chips.push(`<span class="chip tier tier-${r.tier}">${TIER_LABEL[r.tier]}</span>`);
+  chips.push(`<span class="chip tier tier-${r.tier}">${escapeHtml(tierLabel(r))}</span>`);
   if (r.assessment.maxStayMinutes !== undefined) chips.push(`<span class="chip">Max ${formatMinutes(r.assessment.maxStayMinutes)}</span>`);
   if (r.assessment.needsDisc) chips.push('<span class="chip">Disc</span>');
   if (r.fit.verdict === 'check') chips.push('<span class="chip warn">Check size</span>');
@@ -374,7 +382,12 @@ async function loadAround(dest: Destination) {
   placesLayer.clearLayers();
   rankLayer.clearLayers();
   try {
-    data = await fetchParking(buildAroundQuery(c, r), ctrl.signal);
+    // Aerial-imagery markings are optional: if that service fails, carry on without them.
+    const [parking, markings] = await Promise.all([
+      fetchParking(buildAroundQuery(c, r), ctrl.signal),
+      fetchMarkings(c, r, ctrl.signal).catch(() => []),
+    ]);
+    data = { ...parking, markings };
     fetchedRadius = r;
     render();
     revealResults();

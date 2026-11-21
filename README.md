@@ -33,11 +33,16 @@ See **[docs/UK_DATA_STRATEGY.md](docs/UK_DATA_STRATEGY.md)** for the full plan. 
    These are cut out of the kerb (`src/uk/`).
 2. **Local rules mapped in OpenStreetMap** (`parking:<side>:*` tags), where they exist: fees, time windows, max
    stay, residents' zones, clearways (`src/rules/`).
-3. **Next:** council open data (CPZs, bays, yellow lines), TfL red routes, the DfT's digital TRO service, and
+3. **Road markings from aerial photography**, where a survey has been processed: yellow lines, zig-zags, red
+   routes and bus lanes remove kerbs, and kerbs with no lines are marked as checked. Spec:
+   [docs/KERB_MARKINGS_FORMAT.md](docs/KERB_MARKINGS_FORMAT.md). The app side is built; the detector needs
+   licensed imagery.
+4. **Next:** council open data (CPZs, bays, yellow lines), TfL red routes, the DfT's digital TRO service, and
    user reports.
 
-Each result is labelled **Rules mapped**, **Partly mapped** or **Unsurveyed** (national rules only: check for
-yellow lines and signs). Unsurveyed streets can be hidden.
+Each result is labelled **Rules mapped**, **Partly mapped**, **Lines checked** (no yellow lines in the aerial
+photo, with its date) or **Unsurveyed** (national rules only: check for yellow lines and signs). Unsurveyed streets
+can be hidden.
 
 ## Vehicle size
 
@@ -67,7 +72,9 @@ rules first" sorts by tier, then distance.
 | `src/rules/conditional.ts`, `legacy.ts`, `duration.ts` | Time conditions, the old `parking:lane` scheme, durations |
 | `src/uk/zones.ts` | National-rule cut-outs: junctions, crossings, bus stops, driveways, … |
 | `src/uk/streets.ts` | Which unmapped streets can be suggested at all |
-| `src/uk/kerbs.ts` | Builds kerb pieces: mapped or inferred rules, cut-outs, vehicle fit |
+| `src/uk/kerbs.ts` | Builds kerb pieces: mapped or inferred rules, cut-outs, aerial markings, vehicle fit |
+| `src/uk/markings.ts` | What each aerial-photo marking means for a kerb |
+| `src/data/markings.ts` | Loads and validates `kerb-markings/1` files (from `VITE_MARKINGS_URL`) |
 | `src/vehicle.ts` | Vehicle presets and size checks |
 | `src/search/rank.ts` | Blocks, distance, tiers, filtering and sorting |
 | `src/search/geocode.ts` | UK address and place search (Nominatim, `countrycodes=gb`) |
